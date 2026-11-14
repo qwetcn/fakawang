@@ -34,7 +34,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/qwetcn/fakawang/main/install
 ./install.sh --non-interactive  # 无人值守安装(密码自动生成并打印)
 ```
 
-> 装好后打开后台 `/admin`,在「支付」页里配置支付通道就能开店。域名与 HTTPS、备份、更新的详细步骤见《部署教程.md》。
+> 安装时填了域名会自动配 Caddy 反代和 HTTPS(域名需先解析到服务器)。装好后打开后台 `/admin`,在「支付」页里配置支付通道就能开店。域名与 HTTPS、备份、更新的详细步骤见《部署教程.md》。
 
 ## 手动安装(Docker)
 
