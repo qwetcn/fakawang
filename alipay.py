@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
-"""支付宝开放平台直连:当面付(alipay.trade.precreate)扫码支付。
+"""支付宝开放平台直连:跳转支付。
 
+买家下单后直接跳转到支付宝收银台付款:手机用 alipay.trade.wap.pay
+(手机网站支付),电脑用 alipay.trade.page.pay(电脑网站支付)。
 凭证:开放平台应用的 APPID + 应用私钥 + 支付宝公钥(应用维度的那个,
-不是平台总公钥)。签名 RSA2(SHA256withRSA)。响应验签:对原始 JSON 中
-响应节点子串验签,防止伪造二维码。
+不是平台总公钥)。签名 RSA2(SHA256withRSA)。查单响应验签:对原始 JSON
+中响应节点子串验签,防止伪造。
 """
 import base64
 import binascii
@@ -186,22 +188,40 @@ def _call(cfg, method, biz_content, timeout=20):
     return verify_response(raw, node_key, cfg["public_key"])
 
 
-def precreate(cfg, out_trade_no, total_amount, subject, notify_url, timeout=20):
-    """当面付预下单,返回 qr_code 字符串。失败抛 AlipayError。"""
-    cfg = dict(cfg)
-    cfg["notify_url"] = notify_url
-    node = _call(cfg, "alipay.trade.precreate", {
+def build_pay_url(cfg, out_trade_no, total_amount, subject, notify_url,
+                  return_url, quit_url, is_mobile):
+    """生成带签名的支付宝收银台地址,浏览器打开即跳转付款。
+
+    不发网络请求,纯签名,失败只可能是指纹/密钥配置问题(抛 ValueError)。
+    手机端多传 quit_url:买家在收银台点取消后回到订单页。
+    """
+    if is_mobile:
+        method, product_code = "alipay.trade.wap.pay", "QUICK_WAP_WAY"
+    else:
+        method, product_code = "alipay.trade.page.pay", "FAST_INSTANT_TRADE_PAY"
+    biz = {
         "out_trade_no": out_trade_no,
         "total_amount": f"{total_amount:.2f}",
         "subject": subject,
-        "timeout_express": "30m",
-    }, timeout=timeout)
-    if node.get("code") != "10000":
-        raise AlipayError(node.get("sub_msg") or node.get("msg") or f"预下单失败 code={node.get('code')}")
-    qr = node.get("qr_code")
-    if not qr:
-        raise AlipayError("预下单成功但未返回二维码")
-    return qr
+        "product_code": product_code,
+    }
+    if is_mobile and quit_url:
+        biz["quit_url"] = quit_url
+    params = {
+        "app_id": cfg["appid"],
+        "method": method,
+        "format": "JSON",
+        "charset": "utf-8",
+        "sign_type": "RSA2",
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "version": "1.0",
+        "notify_url": notify_url,
+        "return_url": return_url,
+        "biz_content": json.dumps(biz, ensure_ascii=False, separators=(",", ":")),
+    }
+    params["sign"] = sign_params(params, cfg["private_key"])
+    gateway = (cfg.get("gateway") or DEFAULT_GATEWAY).rstrip("/")
+    return gateway + "?" + urllib.parse.urlencode(params)
 
 
 def query(cfg, out_trade_no, timeout=15):

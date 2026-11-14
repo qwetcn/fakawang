@@ -2,7 +2,7 @@
 {% block title %}支付 - {{ settings.site_name }}{% endblock %}
 {% block body %}
 <div class="panel center">
-  <h2>{% if channel == 'alipay' %}支付宝扫码支付{% else %}微信扫码支付{% endif %}</h2>
+  <h2>{% if channel == 'alipay' %}支付宝支付{% else %}微信扫码支付{% endif %}</h2>
   <p>订单号: <b>{{ order.out_trade_no }}</b></p>
   <p class="price-big">¥ {{ fmt_cents(order.total_cents) }}</p>
   {% if error %}
@@ -12,15 +12,11 @@
   {% if qr_img %}
   <img class="qr-img" src="{{ qr_img }}" alt="支付二维码">
   {% elif qr_link %}
-  <p class="warn">二维码生成失败,请用{% if channel == 'alipay' %}支付宝{% else %}微信{% endif %}打开以下链接支付:</p>
+  <p class="warn">二维码生成失败,请用微信打开以下链接支付:</p>
   <p class="mono">{{ qr_link }}</p>
   <p><a class="btn primary" href="{{ qr_link }}">打开支付</a></p>
   {% endif %}
-  {% if channel == 'wechat' %}
   <p class="muted">请用微信扫码,并支付与订单完全一致的金额;付款后监听软件确认到账即自动发货,页面会自动跳转。</p>
-  {% else %}
-  <p class="muted">请用支付宝扫码支付;支付成功后页面自动跳转到订单页。</p>
-  {% endif %}
   <div class="btn-row center-row">
     <button class="btn" id="btnRefresh">我已支付,查询结果</button>
     <a class="btn" href="/order/{{ order.out_trade_no }}">查看订单</a>
