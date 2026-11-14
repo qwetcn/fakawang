@@ -14,6 +14,7 @@
     {% else %}已取消{% endif %}
   </b></p>
   {% if order.note %}<p class="warn">{{ order.note }}</p>{% endif %}
+  {% if order.status == 'cancelled' and order.cancel_reason %}<p>取消原因: {{ order.cancel_reason }}</p>{% endif %}
   <table class="tbl">
     <tr><th>商品</th><th>数量</th><th>单价</th></tr>
     {% for it in order['items'] %}

@@ -125,6 +125,8 @@ class Store:
                 conn.execute("ALTER TABLE orders ADD COLUMN coupon_id INTEGER")
             if "discount_cents" not in ocols:
                 conn.execute("ALTER TABLE orders ADD COLUMN discount_cents INTEGER NOT NULL DEFAULT 0")
+            if "cancel_reason" not in ocols:
+                conn.execute("ALTER TABLE orders ADD COLUMN cancel_reason TEXT NOT NULL DEFAULT ''")
             ccols = [r[1] for r in conn.execute("PRAGMA table_info(cards)").fetchall()]
             if "source" not in ccols:
                 conn.execute("ALTER TABLE cards ADD COLUMN source TEXT NOT NULL DEFAULT 'stock'")
@@ -576,8 +578,8 @@ class Store:
             finally:
                 conn.close()
 
-    def cancel_order(self, order_id):
-        # 取消订单。返回 {"prev_status": ..., "coupon": ...}:
+    def cancel_order(self, order_id, reason=""):
+        # 取消订单。reason 为取消/退款理由,显示给买家。返回 {"prev_status": ..., "coupon": ...}:
         # 已取消的订单重复取消是空操作(绝不重复发券);取消已付订单(退款)时
         # 自动发一张等额优惠券(金额 = 实付金额),供买家重新下单抵扣。
         # 取消待支付订单时,释放该单锁定的优惠券。
@@ -631,7 +633,8 @@ class Store:
                                 raise ValueError("券码生成失败,请重试")
                             coupon = dict(conn.execute(
                                 "SELECT * FROM coupons WHERE id=?", (cur.lastrowid,)).fetchone())
-                conn.execute("UPDATE orders SET status='cancelled' WHERE id=?", (order_id,))
+                conn.execute("UPDATE orders SET status='cancelled', cancel_reason=? WHERE id=?",
+                             (str(reason or "").strip()[:200], order_id))
                 conn.commit()
                 return {"prev_status": prev_status, "coupon": coupon}
             except Exception:

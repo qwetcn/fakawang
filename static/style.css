@@ -97,3 +97,6 @@ code { background: #f1f5f9; padding: 2px 6px; border-radius: 6px; font-size: 13p
 .coupon-row{display:flex;gap:8px}
 .coupon-row input{flex:1}
 .coupon-row2{display:flex;gap:12px;align-items:center;padding:8px 0;border-bottom:1px solid #eee;flex-wrap:wrap}
+
+.reason-row{display:block;margin:10px 0}
+.reason-row input{width:100%;margin-top:4px}

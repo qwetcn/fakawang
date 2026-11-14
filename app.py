@@ -1312,7 +1312,9 @@ def admin_order_fulfill(oid):
 def admin_order_cancel(oid):
     require_admin()
     check_csrf()
-    result = store.cancel_order(oid)
+    data = request.get_json(silent=True) or {}
+    reason = str(data.get("reason", "") or "").strip()[:200]
+    result = store.cancel_order(oid, reason=reason)
     out = {"ok": True, "prev_status": result["prev_status"]}
     if result["coupon"]:
         out["coupon"] = {"code": result["coupon"]["code"],

@@ -379,6 +379,7 @@ var html = '<h3>订单 ' + o.out_trade_no + ' · ' + statusText(o.status) + '</h
 + '<p>邮箱: ' + esc(o.email) + ' · 支付方式: ' + esc(o.pay_type) + ' · 网关单号: ' + esc(o.trade_no || '-') + (o.note? '<br><span class="warn">' + esc(o.note) + '</span>': '') + '</p>'
 + (o.discount_cents ? '<p>优惠券: ' + esc(o.used_coupon ? o.used_coupon.code : '') + ' 抵扣 ' + money(o.discount_cents) + ' · 实付 ' + money(o.payable_cents) + '</p>' : '')
 + (o.refund_coupon ? '<p class="warn">已发退款补偿券: ' + esc(o.refund_coupon.code) + ' ' + money(o.refund_coupon.amount_cents) + '</p>' : '')
++ (o.cancel_reason ? '<p>取消原因: ' + esc(o.cancel_reason) + '</p>' : '')
 + '<table class="tbl"><tr><th>商品</th><th>数量</th><th>单价</th></tr>' + o.items.map(function(it){ return '<tr><td>' + esc(it.product_name) + '</td><td>' + it.qty + '</td><td>' + money(it.unit_price_cents) + '</td></tr>';}).join('') + '</table>';
 var pend = o.items.filter(function(it){ return it.fulfill_mode === 'manual' && (it.qty - (it.allocated || 0)) > 0; });
 if (pend.length && o.status !== 'cancelled') {
@@ -398,7 +399,7 @@ html += '<button class="btn primary" onclick="orderAct(' + id + ', \'refresh\')"
 if (o.status === 'unpaid' || o.status === 'paid_manual' || o.status === 'paid_unfulfilled') {
 html += ' <button class="btn" onclick="orderAct(' + id + ', \'fulfill\')">手动发货</button>';
 }
-if (o.status!== 'cancelled') html += ' <button class="btn" onclick="orderAct(' + id + ', \'cancel\')">' + (o.status === 'unpaid' ? '取消订单' : '退款并取消(自动发等额优惠券)') + '</button>';
+if (o.status!== 'cancelled') html += '<label class="reason-row">取消/退款理由(会显示给买家)<input id="cancelReason" maxlength="200" placeholder="如:缺货无法发货,已退款"></label> <button class="btn" onclick="orderAct(' + id + ', \'cancel\')">' + (o.status === 'unpaid' ? '取消订单' : '退款并取消(自动发等额优惠券)') + '</button>';
 if (o.status === 'unpaid' || o.status === 'cancelled') html += ' <button class="btn danger" onclick="orderAct(' + id + ', \'delete\')">删除订单</button>';
 html += '</div>';
 var box = document.getElementById('orderDetail');
@@ -411,6 +412,10 @@ if (act === 'cancel' &&!confirm('取消订单并释放已发卡密?已付订单�
 if (act === 'fulfill' &&!confirm('确认发货?手动发货框里填的内容会直接发给买家,没填的按库存分配;未支付订单会同时标记为已支付,请确认已收款。')) return;
 var path = '/admin/api/orders/' + id + (act === 'delete'? '': '/' + act);
 var body = undefined;
+if (act === 'cancel') {
+var ri = document.getElementById('cancelReason');
+body = {reason: ri ? ri.value : ''};
+}
 if (act === 'fulfill') {
 var mc = {};
 document.querySelectorAll('.manual-box').forEach(function(ta){
