@@ -12,12 +12,22 @@
   {% if qr_img %}
   <img class="qr-img" src="{{ qr_img }}" alt="支付二维码">
   {% elif qr_link %}
-  <p class="warn">二维码生成失败,请用微信打开以下链接支付:</p>
+  <p class="warn">二维码生成失败,请用{% if channel == 'alipay' %}支付宝{% else %}微信{% endif %}打开以下链接支付:</p>
   <p class="mono">{{ qr_link }}</p>
-  <p><a class="btn primary" href="{{ qr_link }}">打开支付</a></p>
   {% endif %}
+  {% if channel == 'alipay' %}
+  {% if in_wechat %}
+  <p class="warn">微信里打不开支付宝:请截图用支付宝扫码,或点右上角···在浏览器中打开,打开后会自动跳转到支付宝。</p>
+  {% else %}
+  <p class="muted">正在为你打开支付宝,未自动跳转可点下面的按钮或扫码支付;支付成功后页面自动跳转到订单页。</p>
+  {% endif %}
+  {% else %}
   <p class="muted">请用微信扫码,并支付与订单完全一致的金额;付款后监听软件确认到账即自动发货,页面会自动跳转。</p>
+  {% endif %}
   <div class="btn-row center-row">
+    {% if channel == 'alipay' and qr_link and not in_wechat %}
+    <a class="btn primary" href="{{ qr_link }}">打开支付宝付款</a>
+    {% endif %}
     <button class="btn" id="btnRefresh">我已支付,查询结果</button>
     <a class="btn" href="/order/{{ order.out_trade_no }}">查看订单</a>
   </div>
@@ -29,6 +39,18 @@
 <script>
 var NO = "{{ order.out_trade_no }}";
 var CHANNEL = "{{ channel }}";
+{% if channel == 'alipay' and qr_link and not in_wechat %}
+(function(){
+  // 手机上自动跳转到支付宝 App(二维码链接本身就是支付地址);只跳一次,
+  // 免得从支付宝返回后又被跳走,回来的人用二维码或按钮付款。
+  var KEY = 'fk_jumped_' + NO;
+  if (sessionStorage.getItem(KEY)) return;
+  if (!/Android|iPhone|iPad|Mobile/i.test(navigator.userAgent)) return;
+  if (/MicroMessenger/i.test(navigator.userAgent)) return;
+  sessionStorage.setItem(KEY, '1');
+  setTimeout(function(){ location.href = {{ qr_link | tojson | safe }}; }, 800);
+})();
+{% endif %}
 var timer = setInterval(function(){
   fetch('/api/order/' + NO + '/status').then(function(r){ return r.json(); }).then(function(d){
     if (d.ok && d.status !== 'unpaid') location.href = '/order/' + NO;

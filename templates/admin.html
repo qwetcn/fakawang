@@ -29,7 +29,7 @@
 <div class="stat-grid" id="statGrid"></div>
 <div class="panel">
 <h3>支付通道(在「支付」里配置)</h3>
-      <p>支付宝: <b>{{ '已启用' if pay_summary.alipay else '未启用' }}</b>{% if pay_summary.alipay_appid %} · AppID: {{ pay_summary.alipay_appid }}{% endif %}<br>
+      <p>支付宝当面付: <b>{{ '已启用' if pay_summary.alipay else '未启用' }}</b>{% if pay_summary.alipay_appid %} · AppID: {{ pay_summary.alipay_appid }}{% endif %}<br>
       微信免签: <b>{{ '已启用' if pay_summary.wechat else '未启用' }}</b><br>
       易支付: <b>{{ '已启用' if pay_summary.epay else '未启用' }}</b>{% if pay_summary.epay_url %} · {{ pay_summary.epay_url }} · 商户号 {{ pay_summary.epay_pid }}{% endif %}</p>
       <p class="muted">各通道的回调地址在「支付」页里查看;站点域名必须能被支付方公网访问到(建议 HTTPS)。</p>
@@ -104,7 +104,7 @@
 
 <section id="tab-pay" class="tabpage" style="display:none">
     <div class="panel">
-      <h3>支付宝跳转支付(直连支付宝开放平台)</h3>
+      <h3>支付宝当面付(直连支付宝开放平台)</h3>
       <label><input type="checkbox" id="payAlipayEnabled"> 启用</label>
       <div class="form-grid">
         <label>AppID <input id="payAlipayAppid" placeholder="2021..."></label>
@@ -114,7 +114,7 @@
       <textarea id="payAlipayPrivate" rows="4" placeholder="留空不修改;填写时粘贴完整 PEM,含 BEGIN/END 行"></textarea>
       <label>支付宝公钥(应用维度的那个)<span class="muted" id="payAlipayPublicHint"></span></label>
       <textarea id="payAlipayPublic" rows="4" placeholder="留空不修改;填写时粘贴完整 PEM,含 BEGIN/END 行"></textarea>
-      <p class="muted">去支付宝开放平台创建应用并开通「手机网站支付」(手机跳转)和「电脑网站支付」(电脑跳转),在应用的密钥管理里设置应用公钥后,把平台返回的「支付宝公钥」粘贴到上面。异步通知地址: <code id="cbAlipay"></code>(程序下单时自动传给支付宝,无需在平台填写)。</p>
+      <p class="muted">去支付宝开放平台创建应用并开通「当面付」,在应用的密钥管理里设置应用公钥后,把平台返回的「支付宝公钥」粘贴到上面。付款页会显示二维码,手机打开时自动跳转支付宝 App。异步通知地址: <code id="cbAlipay"></code>(程序下单时自动传给支付宝,无需在平台填写)。</p>
     </div>
     <div class="panel">
       <h3>微信免签(个人收款码 + 监听软件回调)</h3>

@@ -2,7 +2,7 @@
 """发卡网:商品 + 卡密库存 + 在线支付 + 自动发货 + 后台管理。
 
 支付通道(三选一或多选,配置都在后台「支付」里):
-1. 支付宝跳转支付:直连支付宝开放平台,下单后跳转支付宝收银台付款,异步通知发货;
+1. 支付宝当面付:直连支付宝开放平台,预下单生成二维码,手机打开付款页自动跳转支付宝 App,异步通知发货;
 2. 微信免签:个人收款码 + 监听软件回调,无需商户号;
 3. 易支付:兼容易支付 V1 协议的聚合网关(网关地址/商户号/密钥)。
 部署:见 README.md。
@@ -281,7 +281,7 @@ def available_pay_methods(cfg=None):
     cfg = cfg or pay_cfg()
     methods = []
     if alipay_ready(cfg):
-        methods.append({"id": "alipay_f2f", "label": "支付宝", "kind": "alipay_f2f"})
+        methods.append({"id": "alipay_f2f", "label": "支付宝(当面付)", "kind": "alipay_f2f"})
     if wechat_ready(cfg):
         methods.append({"id": "wechat_free", "label": "微信(免签)", "kind": "wechat_free"})
     if epay_ready(cfg):
@@ -367,7 +367,7 @@ def qr_data_uri(text):
 
 
 def build_next_url(order, cfg):
-    """订单的下一步:易支付返回网关地址,支付宝返回站内跳转页(再 302 到支付宝),免签返回站内付款页。"""
+    """订单的下一步:易支付返回网关地址,当面付/免签返回站内付款页。"""
     kind = method_kind(order["pay_type"])
     if kind == "epay":
         code = order["pay_type"].split(":", 1)[1]
@@ -406,7 +406,7 @@ def refresh_order_payment(order, cfg):
         return True, None
     if kind == "alipay_f2f":
         if not alipay_ready(cfg):
-            return False, "支付宝支付未配置"
+            return False, "支付宝当面付未配置"
         try:
             node = alipay.query(alipay_cfg(cfg), order["out_trade_no"])
         except alipay.AlipayError as e:
@@ -617,25 +617,25 @@ def pay_alipay_page(out_trade_no):
     if order["status"] != "unpaid":
         return redirect(f"/order/{out_trade_no}")
     cfg = pay_cfg()
+    error = None
+    qr_img = qr_link = None
     if not alipay_ready(cfg):
-        return render_template("pay_qr.html", order=order, channel="alipay",
-                               qr_img=None, qr_link=None,
-                               error="支付宝支付尚未配置,请联系站长")
-    ua = request.headers.get("User-Agent", "")
-    if "MicroMessenger" in ua:
-        # 微信内置浏览器打不开支付宝,提示去系统浏览器
-        return render_template("alipay_wechat_tip.html", order=order)
-    names = [it["product_name"] for it in order["items"]]
-    subject = names[0] + (f" 等 {len(names)} 件商品" if len(names) > 1 else "")
-    is_mobile = bool(re.search(r"Mobile|Android|iPhone|iPad", ua, re.I))
-    url = alipay.build_pay_url(
-        alipay_cfg(cfg), order["out_trade_no"],
-        Decimal(order["total_cents"]) / 100, subject,
-        base_url() + "/pay/alipay/notify",
-        base_url() + "/pay/return",
-        base_url() + "/order/" + out_trade_no,
-        is_mobile)
-    return redirect(url)
+        error = "支付宝当面付尚未配置,请联系站长"
+    else:
+        names = [it["product_name"] for it in order["items"]]
+        subject = names[0] + (f" 等 {len(names)} 件商品" if len(names) > 1 else "")
+        try:
+            qr_link = alipay.precreate(
+                alipay_cfg(cfg), order["out_trade_no"],
+                Decimal(order["total_cents"]) / 100, subject,
+                base_url() + "/pay/alipay/notify")
+            qr_img = qr_data_uri(qr_link)
+        except alipay.AlipayError as e:
+            error = f"生成支付二维码失败:{e}"
+    in_wechat = "MicroMessenger" in request.headers.get("User-Agent", "")
+    return render_template("pay_qr.html", order=order, channel="alipay",
+                           qr_img=qr_img, qr_link=qr_link, error=error,
+                           in_wechat=in_wechat)
 
 
 @app.route("/pay/wechat/<out_trade_no>")
@@ -658,7 +658,8 @@ def pay_wechat_page(out_trade_no):
     else:
         error = "店主尚未配置微信收款码,请联系站长"
     return render_template("pay_qr.html", order=order, channel="wechat",
-                           qr_img=qr_img, qr_link=qr_link, error=error)
+                           qr_img=qr_img, qr_link=qr_link, error=error,
+                           in_wechat=False)
 
 
 # ---------- 支付回调 ----------
@@ -997,7 +998,7 @@ def admin_pay_settings():
     if cfg["pay_epay_enabled"] == "1" and not epay_ready(cfg):
         errs.append("易支付已启用但网关地址/商户号/密钥未填全")
     if cfg["pay_alipay_enabled"] == "1" and not alipay_ready(cfg):
-        errs.append("支付宝支付已启用但 AppID/应用私钥/支付宝公钥未填全")
+        errs.append("支付宝当面付已启用但 AppID/应用私钥/支付宝公钥未填全")
     if cfg["pay_wechat_enabled"] == "1" and not wechat_ready(cfg):
         errs.append("微信免签已启用但收款码未填")
     if errs:
