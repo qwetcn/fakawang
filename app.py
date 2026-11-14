@@ -1314,7 +1314,10 @@ def admin_order_cancel(oid):
     check_csrf()
     data = request.get_json(silent=True) or {}
     reason = str(data.get("reason", "") or "").strip()[:200]
-    result = store.cancel_order(oid, reason=reason)
+    try:
+        result = store.cancel_order(oid, reason=reason)
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
     out = {"ok": True, "prev_status": result["prev_status"]}
     if result["coupon"]:
         out["coupon"] = {"code": result["coupon"]["code"],

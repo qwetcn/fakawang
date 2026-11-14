@@ -399,7 +399,9 @@ html += '<button class="btn primary" onclick="orderAct(' + id + ', \'refresh\')"
 if (o.status === 'unpaid' || o.status === 'paid_manual' || o.status === 'paid_unfulfilled') {
 html += ' <button class="btn" onclick="orderAct(' + id + ', \'fulfill\')">手动发货</button>';
 }
-if (o.status!== 'cancelled') html += '<label class="reason-row">取消/退款理由(会显示给买家)<input id="cancelReason" maxlength="200" placeholder="如:缺货无法发货,已退款"></label> <button class="btn" onclick="orderAct(' + id + ', \'cancel\')">' + (o.status === 'unpaid' ? '取消订单' : '退款并取消(自动发等额优惠券)') + '</button>';
+var allAuto = o.items.length && o.items.every(function(it){ return it.fulfill_mode !== 'manual'; });
+var canCancel = o.status !== 'cancelled' && o.status !== 'paid' && !(o.status === 'paid_unfulfilled' && allAuto);
+if (canCancel) html += '<label class="reason-row">取消/退款理由(会显示给买家)<input id="cancelReason" maxlength="200" placeholder="如:缺货无法发货,已退款"></label> <button class="btn" onclick="orderAct(' + id + ', \'cancel\')">' + (o.status === 'unpaid' ? '取消订单' : '退款并取消(自动发等额优惠券)') + '</button>';
 if (o.status === 'unpaid' || o.status === 'cancelled') html += ' <button class="btn danger" onclick="orderAct(' + id + ', \'delete\')">删除订单</button>';
 html += '</div>';
 var box = document.getElementById('orderDetail');

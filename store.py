@@ -595,6 +595,17 @@ class Store:
                 if prev_status == "cancelled":
                     conn.rollback()
                     return {"prev_status": prev_status, "coupon": None}
+                if prev_status == "paid":
+                    raise ValueError("已发货的订单不能退单")
+                if prev_status == "paid_unfulfilled":
+                    # 全自动发货商品的订单不能退单:缺货时补库存后点手动发货补发。
+                    # 含手动发货商品的订单仍可退单。
+                    modes = conn.execute(
+                        "SELECT COALESCE(p.fulfill_mode, 'auto') FROM order_items oi"
+                        " LEFT JOIN products p ON p.id = oi.product_id"
+                        " WHERE oi.order_id=?", (order_id,)).fetchall()
+                    if modes and all(m[0] != "manual" for m in modes):
+                        raise ValueError("自动发货的订单不能退单,缺货时请补库存后点手动发货")
                 # 手动现填的内容是专属的,取消后直接删除,绝不能回流库存被二次出售;
                 # 只有预导入的库存卡才释放回未售出。
                 conn.execute("DELETE FROM cards WHERE order_id=? AND source='manual'", (order_id,))
@@ -649,7 +660,7 @@ class Store:
             if not row:
                 raise ValueError("订单不存在")
             if row["status"] in ("paid", "paid_unfulfilled", "paid_manual"):
-                raise ValueError("已支付订单不能删除,请先取消(会释放卡密)")
+                raise ValueError("已支付订单不能删除,请先取消订单(已发货的订单不能取消,也不能删除)")
             conn.execute("DELETE FROM order_items WHERE order_id=?", (order_id,))
             conn.execute("DELETE FROM orders WHERE id=?", (order_id,))
 
