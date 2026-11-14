@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}查订单 - {{ settings.site_name }}{% endblock %}
+{% block body %}
+<h2>查订单</h2>
+<div class="panel">
+  <label>订单号或下单邮箱</label>
+  <input id="q" type="text" placeholder="输入订单号或邮箱">
+  <button class="btn primary" id="btnSearch">查询</button>
+  <p class="error" id="errBox" style="display:none"></p>
+</div>
+<div id="results"></div>
+<div class="panel">
+  <h3>本机订单</h3>
+  <div id="localOrders" class="muted">本浏览器还没有下单记录。</div>
+</div>
+{% endblock %}
+{% block script %}
+<script>
+function statusText(s){
+  return {'unpaid':'待支付','paid':'已发货','paid_unfulfilled':'部分缺货','paid_manual':'待手动发货','cancelled':'已取消'}[s] || s;
+}
+document.getElementById('btnSearch').onclick = function(){
+  var q = document.getElementById('q').value.trim();
+  var err = document.getElementById('errBox');
+  if (!q) { err.textContent = '请输入订单号或邮箱'; err.style.display = 'block'; return; }
+  err.style.display = 'none';
+  fetch('/api/orders/search?q=' + encodeURIComponent(q))
+  .then(function(r){ return r.json(); })
+  .then(function(d){
+    var box = document.getElementById('results');
+    if (!d.ok) { err.textContent = d.error; err.style.display = 'block'; return; }
+    if (!d.orders.length) { box.innerHTML = '<div class="empty">没有找到订单,请检查订单号或邮箱是否正确。</div>'; return; }
+    box.innerHTML = d.orders.map(function(o){
+      return '<a class="order-row" href="/order/' + o.out_trade_no + '"><span>' + o.out_trade_no + '</span><span>¥ ' + (o.total_cents/100).toFixed(2) + '</span><span>' + statusText(o.status) + '</span><span class="muted">' + o.created_at + '</span></a>';
+    }).join('');
+  });
+};
+(function(){
+  try {
+    var list = JSON.parse(localStorage.getItem('fk_orders') || '[]');
+    if (list.length) {
+      document.getElementById('localOrders').innerHTML = list.map(function(no){
+        return '<a class="order-row" href="/order/' + no + '"><span>' + no + '</span></a>';
+      }).join('');
+    }
+  } catch(e){}
+})();
+</script>
+{% endblock %}

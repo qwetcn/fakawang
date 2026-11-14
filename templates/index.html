@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="cats">
+  <a href="#all" class="chip">全部</a>
+  {% for c in categories %}
+  <a href="#cat-{{ c.id }}" class="chip">{{ c.name }}</a>
+  {% endfor %}
+</div>
+{% if not categories %}
+<div class="empty">店里还没有商品,请站长在后台添加分类和商品。</div>
+{% endif %}
+{% for c in categories %}
+<section id="cat-{{ c.id }}" class="cat-sec">
+  <h2>{{ c.name }}</h2>
+  <div class="grid">
+    {% for p in by_cat.get(c.id, []) %}
+    <a class="card" href="/buy/{{ p.id }}">
+      {% if p.image_url %}
+      <img class="card-img" src="{{ p.image_url }}" alt="" loading="lazy">
+      {% else %}
+      <div class="card-img ph">{{ (p.name.lstrip("【[（(")[:1]) or "卡" }}</div>
+      {% endif %}
+      {% if p.recommend %}<span class="ribbon">推荐</span>{% endif %}
+      <div class="card-body">
+        <div class="card-name">{{ p.name }}</div>
+        <div class="card-meta">
+          {% if p.fulfill_mode == 'manual' %}
+          {% if p.stock > 0 %}<span class="stock">库存 {{ p.stock }}</span> {% endif %}<span class="mode">手动发货</span>
+          {% elif p.stock > 0 %}
+          <span class="stock">库存 {{ p.stock }}</span> <span class="mode">自动发货</span>
+          {% else %}
+          <span class="stock out">缺货</span> <span class="mode">自动发货</span>
+          {% endif %}
+        </div>
+        <div class="card-price">¥ {{ fmt_cents(p.price_cents) }}</div>
+      </div>
+    </a>
+    {% else %}
+    <div class="empty">该分类暂无商品。</div>
+    {% endfor %}
+  </div>
+</section>
+{% endfor %}
+{% endblock %}

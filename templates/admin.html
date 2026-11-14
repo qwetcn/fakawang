@@ -1,0 +1,514 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>后台管理 - {{ settings.site_name}}</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+<div class="topbar-in">
+<a class="logo" href="/">← 回到店铺</a>
+<nav><span class="muted">后台管理</span> <button class="btn small" id="btnLogout">退出登录</button></nav>
+</div>
+</header>
+<main class="wrap wide">
+<div class="tabs">
+<button data-tab="stats" class="tab active">概况</button>
+<button data-tab="cats" class="tab">分类</button>
+<button data-tab="products" class="tab">商品</button>
+<button data-tab="cards" class="tab">卡密</button>
+<button data-tab="orders" class="tab">订单</button>
+<button data-tab="pay" class="tab">支付</button>
+<button data-tab="notify" class="tab">通知</button>
+    <button data-tab="settings" class="tab">设置</button>
+</div>
+
+<section id="tab-stats" class="tabpage">
+<div class="stat-grid" id="statGrid"></div>
+<div class="panel">
+<h3>支付通道(在「支付」里配置)</h3>
+      <p>支付宝当面付: <b>{{ '已启用' if pay_summary.alipay else '未启用' }}</b>{% if pay_summary.alipay_appid %} · AppID: {{ pay_summary.alipay_appid }}{% endif %}<br>
+      微信免签: <b>{{ '已启用' if pay_summary.wechat else '未启用' }}</b><br>
+      易支付: <b>{{ '已启用' if pay_summary.epay else '未启用' }}</b>{% if pay_summary.epay_url %} · {{ pay_summary.epay_url }} · 商户号 {{ pay_summary.epay_pid }}{% endif %}</p>
+      <p class="muted">各通道的回调地址在「支付」页里查看;站点域名必须能被支付方公网访问到(建议 HTTPS)。</p>
+    </div>
+  </section>
+
+<section id="tab-cats" class="tabpage" style="display:none">
+<div class="panel">
+<h3>添加分类</h3>
+<div class="form-row"><input id="catName" placeholder="分类名"><input id="catSort" type="number" value="0" placeholder="排序"><button class="btn primary" id="btnAddCat">添加</button></div>
+</div>
+<div class="panel"><table class="tbl" id="catTable"></table></div>
+</section>
+
+<section id="tab-products" class="tabpage" style="display:none">
+<div class="panel">
+<h3 id="prodFormTitle">添加商品</h3>
+<input type="hidden" id="prodId">
+<div class="form-grid">
+<label>分类 <select id="prodCat"></select></label>
+<label>商品名 <input id="prodName" placeholder="如:1~2年"></label>
+<label>价格(元) <input id="prodPrice" placeholder="如: 12.28"></label>
+<label>图片地址(可选) <input id="prodImg" placeholder="https://..."></label>
+<label>排序 <input id="prodSort" type="number" value="0"></label>
+<label>最少购买 <input id="prodMin" type="number" value="1"></label>
+<label>最多购买 <input id="prodMax" type="number" value="100"></label>
+<label><input type="checkbox" id="prodRec"> 推荐</label>
+<label><input type="checkbox" id="prodEnabled" checked> 上架</label>
+<label>发货方式 <select id="prodMode"><option value="auto">自动发货</option><option value="manual">手动发货</option></select></label>
+</div>
+<label>商品详情(纯文本,换行显示)</label>
+<textarea id="prodDesc" rows="5" placeholder="卡密格式、售后说明等"></textarea>
+<div class="btn-row">
+<button class="btn primary" id="btnSaveProd">保存商品</button>
+<button class="btn" id="btnResetProd">清空表单</button>
+</div>
+</div>
+<div class="panel"><table class="tbl" id="prodTable"></table></div>
+</section>
+
+<section id="tab-cards" class="tabpage" style="display:none">
+<div class="panel">
+<label>选择商品 <select id="cardProd"></select></label>
+<p id="cardCounts" class="muted"></p>
+<label>批量添加卡密(每行一条)</label>
+<textarea id="cardLines" rows="6" placeholder="账号----密码----2FA密钥&#10;一行一条,不要空行"></textarea>
+<button class="btn primary" id="btnAddCards">添加卡密</button>
+</div>
+<div class="panel">
+<div class="btn-row">
+<select id="cardStatus"><option value="">全部状态</option><option value="unused">未售出</option><option value="used">已售出</option></select>
+<button class="btn" id="btnDelCards">删除选中(仅未售出)</button>
+<span class="muted" id="cardTotal"></span>
+</div>
+<table class="tbl" id="cardTable"></table>
+<div class="btn-row"><button class="btn" id="cardPrev">上一页</button><button class="btn" id="cardNext">下一页</button></div>
+</div>
+</section>
+
+<section id="tab-orders" class="tabpage" style="display:none">
+<div class="panel">
+<div class="btn-row">
+<select id="orderStatus"><option value="">全部状态</option><option value="unpaid">待支付</option><option value="paid">已发货</option><option value="paid_unfulfilled">部分缺货</option><option value="paid_manual">待手动发货</option><option value="cancelled">已取消</option></select>
+<input id="orderQ" placeholder="订单号/邮箱搜索">
+<button class="btn primary" id="btnSearchOrders">搜索</button>
+</div>
+<table class="tbl" id="orderTable"></table>
+<div class="btn-row"><button class="btn" id="orderPrev">上一页</button><button class="btn" id="orderNext">下一页</button></div>
+</div>
+<div class="panel" id="orderDetail" style="display:none"></div>
+</section>
+
+<section id="tab-pay" class="tabpage" style="display:none">
+    <div class="panel">
+      <h3>支付宝当面付(直连支付宝开放平台)</h3>
+      <label><input type="checkbox" id="payAlipayEnabled"> 启用</label>
+      <div class="form-grid">
+        <label>AppID <input id="payAlipayAppid" placeholder="2021..."></label>
+        <label>网关地址 <input id="payAlipayGateway"></label>
+      </div>
+      <label>应用私钥(RSA2)<span class="muted" id="payAlipayPrivateHint"></span></label>
+      <textarea id="payAlipayPrivate" rows="4" placeholder="留空不修改;填写时粘贴完整 PEM,含 BEGIN/END 行"></textarea>
+      <label>支付宝公钥(应用维度的那个)<span class="muted" id="payAlipayPublicHint"></span></label>
+      <textarea id="payAlipayPublic" rows="4" placeholder="留空不修改;填写时粘贴完整 PEM,含 BEGIN/END 行"></textarea>
+      <p class="muted">去支付宝开放平台创建应用并开通「当面付」,在应用的密钥管理里设置应用公钥后,把平台返回的「支付宝公钥」粘贴到上面。异步通知地址: <code id="cbAlipay"></code>(程序下单时自动传给支付宝,无需在平台填写)。</p>
+    </div>
+    <div class="panel">
+      <h3>微信免签(个人收款码 + 监听软件回调)</h3>
+      <label><input type="checkbox" id="payWechatEnabled"> 启用</label>
+      <label>收款码内容(微信收款码解析出的链接,站内渲染成二维码)</label>
+      <textarea id="payWechatQrText" rows="2" placeholder="https://wx.tenpay.com/... 或 wxp://..."></textarea>
+      <label>收款码图片地址(可选,填了优先用图片)</label>
+      <input id="payWechatQrImage" placeholder="https://.../wxqr.png">
+      <div class="form-grid">
+        <label>回调密钥(填进监听软件) <input id="payWechatSecret"></label>
+        <label>金额匹配窗口(分钟) <input id="payWechatWindow" type="number" value="30"></label>
+      </div>
+      <div class="btn-row"><button class="btn" id="btnRegenSecret">重新生成密钥</button></div>
+      <p class="muted">买家扫你的个人收款码付款,监听软件检测到到账后回调本店。回调地址: <code id="cbWechat"></code></p>
+      <p class="muted">通知转发地址(短信转发器 Webhook 用): <code id="cbForward"></code></p>
+      <p class="muted">短信转发器里:规则类型选 APP通知,包名是 com.tencent.mm,标题包含 微信支付;自定义模板填:<br><code id="cbTemplate"></code></p>
+      <p class="muted">回调格式(JSON POST,签名为 HMAC-SHA256,明文是排序后的 k=v&amp;... 串,密钥为上面的回调密钥):<br><code id="cbExample"></code></p>
+      <p class="muted">匹配规则:回调带订单号时按订单号+金额核对;不带订单号时按金额在窗口内匹配唯一待支付订单;金额相同有多笔时不自动发货,需后台手动发货。监听软件需你自己部署并保持在线,掉线期间的收款不会自动发货。</p>
+    </div>
+    <div class="panel">
+      <h3>易支付(聚合网关)</h3>
+      <label><input type="checkbox" id="payEpayEnabled"> 启用</label>
+      <div class="form-grid">
+        <label>网关地址 <input id="payEpayUrl" placeholder="https://pay.example.com"></label>
+        <label>商户号 PID <input id="payEpayPid"></label>
+        <label>商户密钥 <span class="muted" id="payEpayKeyHint"></span><input id="payEpayKey" type="password" placeholder="留空不修改"></label>
+        <label>支付方式 <input id="payEpayTypes" placeholder="alipay:支付宝,wxpay:微信支付"></label>
+      </div>
+      <p class="muted">异步通知地址: <code id="cbEpay"></code>(程序下单时自动传给网关,无需在网关后台填写)。</p>
+    </div>
+    <div class="panel"><button class="btn primary" id="btnSavePay">保存支付设置</button></div>
+  </section>
+
+  <section id="tab-notify" class="tabpage" style="display:none">
+<div class="panel">
+<h3>邮件通知</h3>
+<p class="muted">手动发货商品的订单付款后,自动发邮件提醒你去后台发货。未付款的订单不通知。</p>
+<div class="form-grid">
+<label><input type="checkbox" id="ntEnabled"> 启用手动发货订单邮件提醒</label>
+<label>收件邮箱 <input id="ntEmail" type="email" placeholder="如:你的邮箱@qq.com"></label>
+<label>SMTP 服务器 <input id="ntHost" placeholder="如:smtp.qq.com"></label>
+<label>端口 <input id="ntPort" type="number" value="465"></label>
+<label>加密方式 <select id="ntSecurity"><option value="ssl">SSL(465)</option><option value="starttls">STARTTLS(587)</option><option value="none">不加密</option></select></label>
+<label>SMTP 账号 <input id="ntUser" placeholder="发件邮箱账号"></label>
+<label>SMTP 密码/授权码 <input id="ntPass" type="password" placeholder="留空不改"><span class="muted" id="ntPassHint"></span></label>
+<label>发件人地址(可空,默认同账号) <input id="ntFrom" placeholder="如:shop@example.com"></label>
+</div>
+<p class="muted">QQ 邮箱:用授权码,不是登录密码。QQ 邮箱设置 → 账户 → POP3/IMAP/SMTP → 生成授权码。163 邮箱同理用授权码;Gmail 用应用专用密码。端口:SSL 一般 465,STARTTLS 一般 587。</p>
+<div class="btn-row">
+<button class="btn primary" id="btnSaveNotify">保存</button>
+<button class="btn" id="btnTestNotify">发送测试邮件</button>
+</div>
+</div>
+</section>
+<section id="tab-settings" class="tabpage" style="display:none">
+<div class="panel">
+<h3>店铺设置</h3>
+<div class="form-grid">
+<label>店铺名称 <input id="setName"></label>
+<label>客服文字 <input id="setContactText"></label>
+<label>客服链接 <input id="setContactUrl" placeholder="https://t.me/xxx"></label>
+</div>
+<label>公告(首页顶部显示,留空不显示)</label>
+<input id="setAnnounce">
+<label>使用教程内容(留空用默认教程)</label>
+<textarea id="setHelp" rows="8"></textarea>
+<button class="btn primary" id="btnSaveSettings">保存设置</button>
+</div>
+</section>
+</main>
+<script>
+var CSRF = "{{ csrf}}";
+function api(path, method, body){
+return fetch(path, {method: method || 'GET', headers: {'Content-Type':'application/json', 'X-CSRF-Token': CSRF},
+body: body? JSON.stringify(body): undefined}).then(function(r){ return r.json().then(function(d){ return {s: r.status, d: d};});});
+}
+function esc(s){ return String(s == null? '': s).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+function money(c){ return '¥ ' + (c/100).toFixed(2);}
+document.querySelectorAll('.tab').forEach(function(b){
+b.onclick = function(){
+document.querySelectorAll('.tab').forEach(function(x){ x.classList.remove('active');});
+b.classList.add('active');
+document.querySelectorAll('.tabpage').forEach(function(p){ p.style.display = 'none';});
+document.getElementById('tab-' + b.dataset.tab).style.display = 'block';
+({stats: loadStats, cats: loadCats, products: loadProducts, cards: loadCardsInit, orders: loadOrders, pay: loadPaySettings, notify: loadNotifySettings, settings: loadSettings})[b.dataset.tab]();
+};
+});
+document.getElementById('btnLogout').onclick = function(){
+fetch('/admin/logout', {method:'POST'}).then(function(){ location.href = '/admin/login';});
+};
+function loadStats(){
+api('/admin/api/stats').then(function(res){
+var s = res.d.stats;
+document.getElementById('statGrid').innerHTML =
+[['今日订单', s.today_orders], ['今日收入', money(s.today_cents)], ['累计订单', s.total_orders],
+['累计收入', money(s.total_cents)], ['商品数', s.products], ['总库存', s.stock],
+['待支付', s.unpaid], ['缺货待处理', s.unfulfilled], ['待手动发货', s.manual_pending]]
+.map(function(x){ return '<div class="stat"><div class="stat-v">' + x[1] + '</div><div class="stat-k">' + x[0] + '</div></div>';}).join('');
+});
+}
+var CATS = [];
+function loadCats(){
+api('/admin/api/categories').then(function(res){
+CATS = res.d.categories;
+document.getElementById('catTable').innerHTML = '<tr><th>ID</th><th>名称</th><th>排序</th><th>操作</th></tr>' + CATS.map(function(c){
+return '<tr><td>' + c.id + '</td><td><input data-id="' + c.id + '" class="cat-name" value="' + esc(c.name) + '"></td><td><input data-id="' + c.id + '" class="cat-sort" type="number" value="' + c.sort + '"></td><td><button class="btn small" onclick="saveCat(' + c.id + ')">保存</button> <button class="btn small danger" onclick="delCat(' + c.id + ')">删除</button></td></tr>';
+}).join('');
+var sel = document.getElementById('prodCat');
+sel.innerHTML = CATS.map(function(c){ return '<option value="' + c.id + '">' + esc(c.name) + '</option>';}).join('');
+});
+}
+document.getElementById('btnAddCat').onclick = function(){
+var name = document.getElementById('catName').value.trim();
+if (!name) return alert('分类名不能为空');
+api('/admin/api/categories', 'POST', {name: name, sort: +document.getElementById('catSort').value || 0}).then(function(res){
+if (res.d.ok) { document.getElementById('catName').value = ''; loadCats();} else alert(res.d.error);
+});
+};
+function saveCat(id){
+var name = document.querySelector('.cat-name[data-id="' + id + '"]').value.trim();
+var sort = +document.querySelector('.cat-sort[data-id="' + id + '"]').value || 0;
+api('/admin/api/categories/' + id, 'PUT', {name: name, sort: sort}).then(function(res){ if (res.d.ok) loadCats(); else alert(res.d.error);});
+}
+function delCat(id){
+if (!confirm('删除该分类?分类下不能有商品。')) return;
+api('/admin/api/categories/' + id, 'DELETE').then(function(res){ if (res.d.ok) loadCats(); else alert(res.d.error);});
+}
+var PRODUCTS = [];
+function loadProducts(){
+api('/admin/api/categories').then(function(res){
+CATS = res.d.categories;
+document.getElementById('prodCat').innerHTML = CATS.map(function(c){ return '<option value="' + c.id + '">' + esc(c.name) + '</option>';}).join('');
+return api('/admin/api/products');
+}).then(function(res){
+PRODUCTS = res.d.products;
+var catName = {}; CATS.forEach(function(c){ catName[c.id] = c.name;});
+document.getElementById('prodTable').innerHTML = '<tr><th>ID</th><th>商品</th><th>分类</th><th>价格</th><th>库存</th><th>发货</th><th>状态</th><th>操作</th></tr>' + PRODUCTS.map(function(p){
+return '<tr><td>' + p.id + '</td><td>' + esc(p.name) + (p.recommend? ' <span class="tag">推荐</span>': '') + '</td><td>' + esc(catName[p.category_id] || '') + '</td><td>' + money(p.price_cents) + '</td><td>' + p.stock + '</td><td>' + (p.fulfill_mode === 'manual'? '手动': '自动') + '</td><td>' + (p.enabled? '上架': '下架') + '</td><td><button class="btn small" onclick="editProd(' + p.id + ')">编辑</button> <button class="btn small" onclick="gotoCards(' + p.id + ')">卡密</button> <button class="btn small danger" onclick="delProd(' + p.id + ')">删除</button></td></tr>';
+}).join('');
+});
+}
+function resetProdForm(){
+document.getElementById('prodId').value = '';
+document.getElementById('prodFormTitle').textContent = '添加商品';
+['prodName','prodPrice','prodImg','prodDesc'].forEach(function(id){ document.getElementById(id).value = '';});
+document.getElementById('prodSort').value = 0; document.getElementById('prodMin').value = 1; document.getElementById('prodMax').value = 100;
+document.getElementById('prodRec').checked = false; document.getElementById('prodEnabled').checked = true; document.getElementById('prodMode').value = 'auto';
+}
+document.getElementById('btnResetProd').onclick = resetProdForm;
+function editProd(id){
+var p = PRODUCTS.find(function(x){ return x.id === id;});
+if (!p) return;
+document.getElementById('prodId').value = p.id;
+document.getElementById('prodFormTitle').textContent = '编辑商品 #' + p.id;
+document.getElementById('prodCat').value = p.category_id;
+document.getElementById('prodName').value = p.name;
+document.getElementById('prodPrice').value = (p.price_cents/100).toFixed(2);
+document.getElementById('prodImg').value = p.image_url || '';
+document.getElementById('prodDesc').value = p.description || '';
+document.getElementById('prodSort').value = p.sort;
+document.getElementById('prodMin').value = p.min_qty;
+document.getElementById('prodMax').value = p.max_qty;
+document.getElementById('prodRec').checked =!!p.recommend;
+document.getElementById('prodEnabled').checked =!!p.enabled;
+document.getElementById('prodMode').value = p.fulfill_mode || 'auto';
+window.scrollTo({top: 0, behavior: 'smooth'});
+}
+document.getElementById('btnSaveProd').onclick = function(){
+var body = {category_id: +document.getElementById('prodCat').value, name: document.getElementById('prodName').value.trim(),
+price: document.getElementById('prodPrice').value.trim(), image_url: document.getElementById('prodImg').value.trim(),
+description: document.getElementById('prodDesc').value, sort: +document.getElementById('prodSort').value || 0,
+min_qty: +document.getElementById('prodMin').value || 1, max_qty: +document.getElementById('prodMax').value || 100,
+recommend: document.getElementById('prodRec').checked? 1: 0, enabled: document.getElementById('prodEnabled').checked? 1: 0, fulfill_mode: document.getElementById('prodMode').value};
+var id = document.getElementById('prodId').value;
+var p = id? api('/admin/api/products/' + id, 'PUT', body): api('/admin/api/products', 'POST', body);
+p.then(function(res){ if (res.d.ok) { resetProdForm(); loadProducts();} else alert(res.d.error);});
+};
+function delProd(id){
+if (!confirm('删除该商品?有售出记录的商品不能删除(可下架)。')) return;
+api('/admin/api/products/' + id, 'DELETE').then(function(res){ if (res.d.ok) loadProducts(); else alert(res.d.error);});
+}
+function gotoCards(id){
+document.querySelector('[data-tab="cards"]').click();
+document.getElementById('cardProd').value = id;
+loadCards();
+}
+var cardPage = 1;
+function loadCardsInit(){
+api('/admin/api/products').then(function(res){
+PRODUCTS = res.d.products;
+var sel = document.getElementById('cardProd');
+var cur = sel.value;
+sel.innerHTML = PRODUCTS.map(function(p){ return '<option value="' + p.id + '">' + esc(p.name) + '</option>';}).join('');
+if (cur) sel.value = cur;
+loadCards();
+});
+}
+document.getElementById('cardProd').onchange = function(){ cardPage = 1; loadCards();};
+document.getElementById('cardStatus').onchange = function(){ cardPage = 1; loadCards();};
+document.getElementById('cardPrev').onclick = function(){ if (cardPage > 1) { cardPage--; loadCards();}};
+document.getElementById('cardNext').onclick = function(){ cardPage++; loadCards();};
+function loadCards(){
+var pid = document.getElementById('cardProd').value;
+if (!pid) return;
+var st = document.getElementById('cardStatus').value;
+api('/admin/api/products/' + pid + '/cards?page=' + cardPage + (st? '&status=' + st: '')).then(function(res){
+document.getElementById('cardTotal').textContent = '共 ' + res.d.total + ' 条';
+var p = PRODUCTS.find(function(x){ return x.id === +pid;});
+document.getElementById('cardCounts').textContent = p? ('当前库存(未售出): ' + p.stock): '';
+document.getElementById('cardTable').innerHTML = '<tr><th></th><th>ID</th><th>卡密内容</th><th>状态</th><th>订单</th></tr>' + res.d.cards.map(function(c){
+return '<tr><td><input type="checkbox" class="card-check" value="' + c.id + '"></td><td>' + c.id + '</td><td class="mono">' + esc(c.content) + '</td><td>' + (c.status === 'unused'? '未售出': '已售出') + '</td><td>' + (c.order_id || '') + '</td></tr>';
+}).join('');
+});
+}
+document.getElementById('btnAddCards').onclick = function(){
+var pid = document.getElementById('cardProd').value;
+var lines = document.getElementById('cardLines').value;
+if (!pid) return alert('先选择商品');
+api('/admin/api/products/' + pid + '/cards', 'POST', {lines: lines}).then(function(res){
+if (res.d.ok) { alert('添加了 ' + res.d.added + ' 条'); document.getElementById('cardLines').value = ''; loadCardsInit();}
+else alert(res.d.error);
+});
+};
+document.getElementById('btnDelCards').onclick = function(){
+var ids = Array.from(document.querySelectorAll('.card-check:checked')).map(function(c){ return +c.value;});
+if (!ids.length) return alert('先勾选要删除的卡密');
+if (!confirm('删除选中的 ' + ids.length + ' 条卡密?(仅删除未售出的)')) return;
+api('/admin/api/cards/delete', 'POST', {ids: ids}).then(function(res){ if (res.d.ok) { alert('删除了 ' + res.d.deleted + ' 条'); loadCards();} else alert(res.d.error);});
+};
+var orderPage = 1;
+function statusText(s){ return {'unpaid':'待支付','paid':'已发货','paid_unfulfilled':'部分缺货','paid_manual':'待手动发货','cancelled':'已取消'}[s] || s;}
+document.getElementById('btnSearchOrders').onclick = function(){ orderPage = 1; loadOrders();};
+document.getElementById('orderPrev').onclick = function(){ if (orderPage > 1) { orderPage--; loadOrders();}};
+document.getElementById('orderNext').onclick = function(){ orderPage++; loadOrders();};
+function loadOrders(){
+var st = document.getElementById('orderStatus').value;
+var q = document.getElementById('orderQ').value.trim();
+api('/admin/api/orders?page=' + orderPage + (st? '&status=' + st: '') + (q? '&q=' + encodeURIComponent(q): '')).then(function(res){
+document.getElementById('orderTable').innerHTML = '<tr><th>订单号</th><th>邮箱</th><th>金额</th><th>状态</th><th>时间</th><th>操作</th></tr>' + res.d.orders.map(function(o){
+return '<tr><td class="mono">' + o.out_trade_no + '</td><td>' + esc(o.email) + '</td><td>' + money(o.total_cents) + '</td><td>' + statusText(o.status) + '</td><td>' + o.created_at + '</td><td><button class="btn small" onclick="showOrder(' + o.id + ')">详情</button></td></tr>';
+}).join('');
+});
+}
+function showOrder(id){
+api('/admin/api/orders/' + id).then(function(res){
+var o = res.d.order;
+var html = '<h3>订单 ' + o.out_trade_no + ' · ' + statusText(o.status) + '</h3>'
++ '<p>邮箱: ' + esc(o.email) + ' · 支付方式: ' + esc(o.pay_type) + ' · 网关单号: ' + esc(o.trade_no || '-') + (o.note? '<br><span class="warn">' + esc(o.note) + '</span>': '') + '</p>'
++ '<table class="tbl"><tr><th>商品</th><th>数量</th><th>单价</th></tr>' + o.items.map(function(it){ return '<tr><td>' + esc(it.product_name) + '</td><td>' + it.qty + '</td><td>' + money(it.unit_price_cents) + '</td></tr>';}).join('') + '</table>';
+var pend = o.items.filter(function(it){ return it.fulfill_mode === 'manual' && (it.qty - (it.allocated || 0)) > 0; });
+if (pend.length && o.status !== 'cancelled') {
+html += '<h4>手动发货内容</h4>' + pend.map(function(it){
+var n = it.qty - (it.allocated || 0);
+return '<label>' + esc(it.product_name) + '(待发 ' + n + ' 件,一行一条,填入要发给买家的内容)<textarea class="manual-box" data-pid="' + it.product_id + '" rows="3" placeholder="如:账号----密码"></textarea></label>';
+}).join('') + '<p class="muted">填了内容就按填的发,不用提前导卡密;不填则按库存分配。</p>';
+}
+var groups = Object.keys(o.cards || {});
+if (groups.length) {
+html += '<h4>已发卡密</h4>' + groups.map(function(g){ return '<h5>' + esc(g) + '</h5><div class="cards-box">' + esc(o.cards[g].join('\n')) + '</div>';}).join('');
+}
+html += '<div class="btn-row">';
+if (o.status === 'unpaid') {
+html += '<button class="btn primary" onclick="orderAct(' + id + ', \'refresh\')">向网关查询</button>';
+}
+if (o.status === 'unpaid' || o.status === 'paid_manual' || o.status === 'paid_unfulfilled') {
+html += ' <button class="btn" onclick="orderAct(' + id + ', \'fulfill\')">手动发货</button>';
+}
+if (o.status!== 'cancelled') html += ' <button class="btn" onclick="orderAct(' + id + ', \'cancel\')">取消订单(释放卡密)</button>';
+if (o.status === 'unpaid' || o.status === 'cancelled') html += ' <button class="btn danger" onclick="orderAct(' + id + ', \'delete\')">删除订单</button>';
+html += '</div>';
+var box = document.getElementById('orderDetail');
+box.innerHTML = html; box.style.display = 'block';
+});
+}
+function orderAct(id, act){
+if (act === 'delete' &&!confirm('删除该订单?')) return;
+if (act === 'cancel' &&!confirm('取消订单并释放已发卡密?')) return;
+if (act === 'fulfill' &&!confirm('确认发货?手动发货框里填的内容会直接发给买家,没填的按库存分配;未支付订单会同时标记为已支付,请确认已收款。')) return;
+var path = '/admin/api/orders/' + id + (act === 'delete'? '': '/' + act);
+var body = undefined;
+if (act === 'fulfill') {
+var mc = {};
+document.querySelectorAll('.manual-box').forEach(function(ta){
+var lines = ta.value.split('\n').map(function(x){ return x.trim(); }).filter(function(x){ return x; });
+if (lines.length) mc[ta.getAttribute('data-pid')] = lines;
+});
+body = {manual_cards: mc};
+}
+api(path, act === 'delete'? 'DELETE': 'POST', body).then(function(res){
+if (res.d.ok) { alert(act === 'refresh'? ('查询结果: ' + statusText(res.d.status || '')): '操作成功'); loadOrders(); showOrder(id);}
+else alert(res.d.error);
+});
+}
+function loadNotifySettings(){
+api('/admin/api/notify-settings').then(function(res){
+var n = res.d.notify;
+document.getElementById('ntEnabled').checked = !!n.enabled;
+document.getElementById('ntEmail').value = n.email || '';
+document.getElementById('ntHost').value = n.host || '';
+document.getElementById('ntPort').value = n.port || 465;
+document.getElementById('ntSecurity').value = n.security || 'ssl';
+document.getElementById('ntUser').value = n.user || '';
+document.getElementById('ntFrom').value = n.from || '';
+document.getElementById('ntPass').value = '';
+document.getElementById('ntPassHint').textContent = n.pass.configured? ('已配置(尾号 ' + n.pass.hint + '),留空不改'): '未配置';
+});
+}
+document.getElementById('btnSaveNotify').onclick = function(){
+api('/admin/api/notify-settings', 'POST', {enabled: document.getElementById('ntEnabled').checked,
+email: document.getElementById('ntEmail').value, host: document.getElementById('ntHost').value,
+port: document.getElementById('ntPort').value, security: document.getElementById('ntSecurity').value,
+user: document.getElementById('ntUser').value, pass: document.getElementById('ntPass').value,
+from: document.getElementById('ntFrom').value}).then(function(res){
+if (res.d.ok) { alert('保存成功'); loadNotifySettings(); } else alert(res.d.error);
+});
+};
+document.getElementById('btnTestNotify').onclick = function(){
+var b = this; b.disabled = true; b.textContent = '发送中…';
+api('/admin/api/notify-settings/test', 'POST').then(function(res){
+b.disabled = false; b.textContent = '发送测试邮件';
+if (res.d.ok) alert('测试邮件已发送,请查收'); else alert(res.d.error);
+});
+};
+function loadSettings(){
+api('/admin/api/settings').then(function(res){
+var s = res.d.settings;
+document.getElementById('setName').value = s.site_name || '';
+document.getElementById('setAnnounce').value = s.announcement || '';
+document.getElementById('setContactText').value = s.contact_text || '';
+document.getElementById('setContactUrl').value = s.contact_url || '';
+document.getElementById('setHelp').value = s.help_text || '';
+});
+}
+document.getElementById('btnSaveSettings').onclick = function(){
+api('/admin/api/settings', 'POST', {site_name: document.getElementById('setName').value,
+announcement: document.getElementById('setAnnounce').value, contact_text: document.getElementById('setContactText').value,
+contact_url: document.getElementById('setContactUrl').value, help_text: document.getElementById('setHelp').value})
+.then(function(res){ alert(res.d.ok? '已保存': res.d.error);});
+};
+function loadPaySettings(){
+  api('/admin/api/pay-settings').then(function(res){
+    var p = res.d.pay;
+    document.getElementById('payEpayEnabled').checked = !!p.epay_enabled;
+    document.getElementById('payEpayUrl').value = p.epay_url || '';
+    document.getElementById('payEpayPid').value = p.epay_pid || '';
+    document.getElementById('payEpayTypes').value = p.epay_types || '';
+    document.getElementById('payEpayKeyHint').textContent = p.epay_key.configured ? ('已配置,尾号 ' + p.epay_key.hint) : '未配置';
+    document.getElementById('payAlipayEnabled').checked = !!p.alipay_enabled;
+    document.getElementById('payAlipayAppid').value = p.alipay_appid || '';
+    document.getElementById('payAlipayGateway').value = p.alipay_gateway || '';
+    document.getElementById('payAlipayPrivateHint').textContent = p.alipay_private_key.configured ? ('已配置,尾号 ' + p.alipay_private_key.hint) : '未配置';
+    document.getElementById('payAlipayPublicHint').textContent = p.alipay_public_key.configured ? ('已配置,尾号 ' + p.alipay_public_key.hint) : '未配置';
+    document.getElementById('payWechatEnabled').checked = !!p.wechat_enabled;
+    document.getElementById('payWechatQrText').value = p.wechat_qr_text || '';
+    document.getElementById('payWechatQrImage').value = p.wechat_qr_image || '';
+    document.getElementById('payWechatSecret').value = p.wechat_secret || '';
+    document.getElementById('payWechatWindow').value = p.wechat_window || '30';
+    document.getElementById('cbEpay').textContent = res.d.callbacks.epay_notify;
+    document.getElementById('cbAlipay').textContent = res.d.callbacks.alipay_notify;
+    document.getElementById('cbWechat').textContent = res.d.callbacks.wechat_notify;
+    document.getElementById('cbForward').textContent = res.d.callbacks.forward_notify + '?key=' + (p.wechat_secret || '');
+    document.getElementById('cbTemplate').textContent = '包名:{{PACKAGE_NAME}} 标题:{{TITLE}} 内容:{{MSG}} 时间:{{RECEIVE_TIME}}';
+    document.getElementById('cbExample').textContent = '{"amount":"12.28","paid_at":"2026-11-15 02:50:00","txid":"4200001234","out_trade_no":"FK...","sign":"hmac_sha256_hex"}';
+  });
+}
+document.getElementById('btnSavePay').onclick = function(){
+  var body = {
+    pay_epay_enabled: document.getElementById('payEpayEnabled').checked,
+    pay_epay_url: document.getElementById('payEpayUrl').value.trim(),
+    pay_epay_pid: document.getElementById('payEpayPid').value.trim(),
+    pay_epay_key: document.getElementById('payEpayKey').value,
+    pay_epay_types: document.getElementById('payEpayTypes').value.trim(),
+    pay_alipay_enabled: document.getElementById('payAlipayEnabled').checked,
+    pay_alipay_appid: document.getElementById('payAlipayAppid').value.trim(),
+    pay_alipay_gateway: document.getElementById('payAlipayGateway').value.trim(),
+    pay_alipay_private_key: document.getElementById('payAlipayPrivate').value,
+    pay_alipay_public_key: document.getElementById('payAlipayPublic').value,
+    pay_wechat_enabled: document.getElementById('payWechatEnabled').checked,
+    pay_wechat_qr_text: document.getElementById('payWechatQrText').value.trim(),
+    pay_wechat_qr_image: document.getElementById('payWechatQrImage').value.trim(),
+    pay_wechat_secret: document.getElementById('payWechatSecret').value.trim(),
+    pay_wechat_window: document.getElementById('payWechatWindow').value.trim()
+  };
+  api('/admin/api/pay-settings', 'POST', body).then(function(res){
+    if (res.d.ok) { alert('已保存'); document.getElementById('payEpayKey').value = ''; document.getElementById('payAlipayPrivate').value = ''; document.getElementById('payAlipayPublic').value = ''; loadPaySettings(); }
+    else alert(res.d.error);
+  });
+};
+document.getElementById('btnRegenSecret').onclick = function(){
+  var arr = new Uint8Array(16);
+  crypto.getRandomValues(arr);
+  document.getElementById('payWechatSecret').value = Array.from(arr).map(function(b){ return ('0' + b.toString(16)).slice(-2); }).join('');
+};
+loadStats();
+</script>
+</body>
+</html>

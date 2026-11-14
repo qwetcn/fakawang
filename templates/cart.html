@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}购物车 - {{ settings.site_name }}{% endblock %}
+{% block body %}
+<h2>购物车</h2>
+<div id="cartBox"></div>
+<div class="panel" id="checkoutBox" style="display:none">
+  <label>电子邮箱(用于查询订单)</label>
+  <input id="email" type="email" placeholder="请输入邮箱" autocomplete="email">
+  <label>支付方式</label>
+    <div class="pay-types">
+      {% for m in pay_methods %}
+      <label class="pay-opt"><input type="radio" name="paytype" value="{{ m.id }}" {% if loop.first %}checked{% endif %}> {{ m.label }}</label>
+      {% endfor %}
+      {% if not pay_methods %}<span class="warn">本站尚未配置支付方式,请联系站长</span>{% endif %}
+    </div>
+  <div class="total">合计: <b id="total">¥ 0.00</b></div>
+  <button class="btn primary" id="btnCheckout">去支付</button>
+  <p class="error" id="errBox" style="display:none"></p>
+</div>
+{% endblock %}
+{% block script %}
+<script>
+var PRODUCTS = {};
+fetch('/api/products').then(function(r){ return r.json(); }).then(function(d){
+  d.products.forEach(function(p){ PRODUCTS[p.id] = p; });
+  render();
+});
+function render(){
+  var cart = getCart();
+  var box = document.getElementById('cartBox');
+  if (!cart.length) {
+    box.innerHTML = '<div class="empty">购物车是空的,去<a href="/">逛逛商品</a>吧。</div>';
+    document.getElementById('checkoutBox').style.display = 'none';
+    return;
+  }
+  var html = '', total = 0, valid = true;
+  cart.forEach(function(it, i){
+    var p = PRODUCTS[it.product_id];
+    if (!p) { html += '<div class="cart-item"><span>商品已下架</span><button data-i="'+i+'" class="rm">删除</button></div>'; valid = false; return; }
+    var sub = p.price_cents * it.qty;
+    total += sub;
+    var lack = p.fulfill_mode !== 'manual' && it.qty > p.stock;
+    if (lack) valid = false;
+    html += '<div class="cart-item"><div><b>' + esc(p.name) + '</b><br><span class="muted">¥ ' + (p.price_cents/100).toFixed(2) + ' × </span>'
+      + '<input type="number" class="qty-in" data-i="'+i+'" value="'+it.qty+'" min="1" max="'+p.max_qty+'">'
+      + (lack ? ' <span class="stock out">库存不足,仅剩 ' + p.stock + '</span>' : ' <span class="stock">库存 ' + p.stock + '</span>')
+      + '</div><div><b>¥ ' + (sub/100).toFixed(2) + '</b> <button data-i="'+i+'" class="rm">删除</button></div></div>';
+  });
+  box.innerHTML = html;
+  document.getElementById('total').textContent = '¥ ' + (total/100).toFixed(2);
+  document.getElementById('checkoutBox').style.display = 'block';
+  document.getElementById('btnCheckout').disabled = !valid;
+  box.querySelectorAll('.rm').forEach(function(b){
+    b.onclick = function(){ var c = getCart(); c.splice(+b.dataset.i, 1); setCart(c); render(); };
+  });
+  box.querySelectorAll('.qty-in').forEach(function(inp){
+    inp.onchange = function(){
+      var c = getCart(); var p = PRODUCTS[c[+inp.dataset.i].product_id];
+      var q = Math.max(1, Math.min(p ? p.max_qty : 100, parseInt(inp.value, 10) || 1));
+      c[+inp.dataset.i].qty = q; setCart(c); render();
+    };
+  });
+}
+function esc(s){ return String(s).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+document.getElementById('btnCheckout').onclick = function(){
+  var email = document.getElementById('email').value.trim();
+  var err = document.getElementById('errBox');
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { err.textContent = '邮箱格式不正确'; err.style.display = 'block'; return; }
+  var r = document.querySelector('input[name=paytype]:checked');
+  var btn = this; btn.disabled = true; btn.textContent = '正在创建订单…';
+  fetch('/api/order/create', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({email: email, pay_type: r ? r.value : '', items: getCart()})})
+  .then(function(res){ return res.json().then(function(d){ return {s: res.status, d: d}; }); })
+  .then(function(res){
+    if (!res.d.ok) { err.textContent = res.d.error || '下单失败'; err.style.display = 'block'; btn.disabled = false; btn.textContent = '去支付'; return; }
+    saveMyOrder(res.d.out_trade_no);
+    setCart([]);
+    location.href = res.d.next;
+  })
+  .catch(function(){ err.textContent = '网络异常,请重试'; err.style.display = 'block'; btn.disabled = false; btn.textContent = '去支付'; });
+};
+</script>
+{% endblock %}

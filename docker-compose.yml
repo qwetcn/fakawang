@@ -1,0 +1,11 @@
+services:
+  shop:
+    build: .
+    container_name: fakawang
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      # 只监听本机:公网必须经反代(Nginx/Caddy)访问,不要直接暴露 8000
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./data:/app/data

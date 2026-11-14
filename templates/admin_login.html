@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>后台登录 - {{ settings.site_name }}</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<main class="wrap narrow">
+  <div class="panel center">
+    <h2>后台登录</h2>
+    <input id="pw" type="password" placeholder="管理密码" autocomplete="current-password">
+    <button class="btn primary" id="btnLogin">登录</button>
+    <p class="error" id="errBox" style="display:none"></p>
+    <p class="muted">默认密码在 .env 的 ADMIN_PASSWORD 里,上线前务必修改。</p>
+  </div>
+</main>
+<script>
+function login(){
+  var pw = document.getElementById('pw').value;
+  fetch('/admin/login', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({password: pw})})
+  .then(function(r){ return r.json().then(function(d){ return {s: r.status, d: d}; }); })
+  .then(function(res){
+    if (res.d.ok) { location.href = '/admin'; }
+    else { var e = document.getElementById('errBox'); e.textContent = res.d.error || '登录失败'; e.style.display = 'block'; }
+  });
+}
+document.getElementById('btnLogin').onclick = login;
+document.getElementById('pw').addEventListener('keydown', function(e){ if (e.key === 'Enter') login(); });
+</script>
+</body>
+</html>

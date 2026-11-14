@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>{% block title %}{{ settings.site_name }}{% endblock %}</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-in">
+    <a class="logo" href="/">{{ settings.site_name }}</a>
+    <nav>
+      <a href="/cart">购物车 <span class="badge" id="cartCount" style="display:none">0</span></a>
+      <a href="/search">查订单</a>
+      <a href="/help">使用教程</a>
+    </nav>
+  </div>
+</header>
+{% if settings.announcement %}
+<div class="announce">{{ settings.announcement }}</div>
+{% endif %}
+<main class="wrap">
+{% block body %}{% endblock %}
+</main>
+<footer>
+  <p>{{ settings.site_name }} · 自动发货 · 下单后请及时保存卡密</p>
+  {% if settings.contact_url %}
+  <p><a href="{{ settings.contact_url }}" target="_blank" rel="noopener">{{ settings.contact_text or '联系客服' }}</a></p>
+  {% endif %}
+</footer>
+<script>
+function getCart(){ try { return JSON.parse(localStorage.getItem('fk_cart') || '[]'); } catch(e){ return []; } }
+function setCart(c){ localStorage.setItem('fk_cart', JSON.stringify(c)); updateCartBadge(); }
+function updateCartBadge(){
+  var n = getCart().reduce(function(s, it){ return s + (it.qty || 0); }, 0);
+  var el = document.getElementById('cartCount');
+  if (el) { el.textContent = n; el.style.display = n ? 'inline-block' : 'none'; }
+}
+function saveMyOrder(no){
+  try {
+    var list = JSON.parse(localStorage.getItem('fk_orders') || '[]');
+    if (list.indexOf(no) < 0) { list.unshift(no); }
+    localStorage.setItem('fk_orders', JSON.stringify(list.slice(0, 30)));
+  } catch(e){}
+}
+updateCartBadge();
+</script>
+{% block script %}{% endblock %}
+</body>
+</html>
