@@ -16,6 +16,10 @@
 {% endblock %}
 {% block script %}
 <script>
+function copyText(t){
+  if (navigator.clipboard) { navigator.clipboard.writeText(t).then(function(){ alert('已复制'); }); }
+  else { var ta = document.createElement('textarea'); ta.value = t; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); alert('已复制'); }
+}
 function statusText(s){
   return {'unpaid':'待支付','paid':'已发货','paid_unfulfilled':'部分缺货','paid_manual':'待手动发货','cancelled':'已取消'}[s] || s;
 }
@@ -29,8 +33,15 @@ document.getElementById('btnSearch').onclick = function(){
   .then(function(d){
     var box = document.getElementById('results');
     if (!d.ok) { err.textContent = d.error; err.style.display = 'block'; return; }
-    if (!d.orders.length) { box.innerHTML = '<div class="empty">没有找到订单,请检查订单号或邮箱是否正确。</div>'; return; }
-    box.innerHTML = d.orders.map(function(o){
+    var html = '';
+    if (d.coupons && d.coupons.length) {
+      html += '<div class="panel"><h3>我的优惠券</h3>' + d.coupons.map(function(c){
+        var st = {'unused':'未使用','locked':'已绑定待支付订单','used':'已使用'}[c.status] || c.status;
+        return '<div class="coupon-row2"><span class="coupon-code">' + c.code + '</span><span>¥ ' + (c.amount_cents/100).toFixed(2) + '</span><span>' + st + '</span>' + (c.status === 'unused' ? '<button class="btn small" onclick="copyText(\'' + c.code + '\')">复制</button>' : '') + '</div>';
+      }).join('') + '<p class="muted">下单时输入券码抵扣,可用于本店任意商品,券不够时付差价。</p></div>';
+    }
+    if (!d.orders.length && !html) { box.innerHTML = '<div class="empty">没有找到订单,请检查订单号或邮箱是否正确。</div>'; return; }
+    box.innerHTML = html + d.orders.map(function(o){
       return '<a class="order-row" href="/order/' + o.out_trade_no + '"><span>' + o.out_trade_no + '</span><span>¥ ' + (o.total_cents/100).toFixed(2) + '</span><span>' + statusText(o.status) + '</span><span class="muted">' + o.created_at + '</span></a>';
     }).join('');
   });

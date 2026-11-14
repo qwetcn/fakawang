@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""SQLite 数据层:分类、商品、卡密、订单、设置。
+"""SQLite 数据层:分类、商品、卡密、订单、优惠券、设置。
 
 金额一律用整数分存储,避免浮点误差。写操作统一加全局锁,
 并在事务内复查库存,防止超卖。"""
@@ -71,6 +71,20 @@ CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS coupons (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT NOT NULL UNIQUE,
+    email TEXT NOT NULL,
+    amount_cents INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'unused',
+    source_order_id INTEGER,
+    locked_order_id INTEGER,
+    used_order_id INTEGER,
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    used_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_coupons_email ON coupons(email);
 CREATE TABLE IF NOT EXISTS payment_callbacks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     channel TEXT NOT NULL,
@@ -107,6 +121,10 @@ class Store:
             ocols = [r[1] for r in conn.execute("PRAGMA table_info(orders)").fetchall()]
             if "notified_at" not in ocols:
                 conn.execute("ALTER TABLE orders ADD COLUMN notified_at TEXT")
+            if "coupon_id" not in ocols:
+                conn.execute("ALTER TABLE orders ADD COLUMN coupon_id INTEGER")
+            if "discount_cents" not in ocols:
+                conn.execute("ALTER TABLE orders ADD COLUMN discount_cents INTEGER NOT NULL DEFAULT 0")
             ccols = [r[1] for r in conn.execute("PRAGMA table_info(cards)").fetchall()]
             if "source" not in ccols:
                 conn.execute("ALTER TABLE cards ADD COLUMN source TEXT NOT NULL DEFAULT 'stock'")
@@ -259,7 +277,106 @@ class Store:
         base = time.strftime("%Y%m%d%H%M%S")
         return f"FK{base}{secrets.token_hex(8)}"
 
-    def create_order(self, email, pay_type, items, client_ip=""):
+    # ---------- 优惠券 ----------
+    def generate_coupon_code(self):
+        # 12 位无歧义字符(去掉 0/O/1/I/L),约 2^60,猜不到
+        alphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+        return "YHQ-" + "".join(secrets.choice(alphabet) for _ in range(12))
+
+    @staticmethod
+    def normalize_coupon_code(code):
+        return (code or "").strip().upper()
+
+    def get_coupon_by_code(self, code):
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM coupons WHERE code=?",
+                               (self.normalize_coupon_code(code),)).fetchone()
+            return dict(row) if row else None
+
+    def get_coupon(self, coupon_id):
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM coupons WHERE id=?", (coupon_id,)).fetchone()
+            return dict(row) if row else None
+
+    def create_coupon(self, email, amount_cents, source_order_id=None, note=""):
+        # 发一张券。amount_cents 必须 > 0。
+        amount_cents = int(amount_cents)
+        if amount_cents <= 0:
+            raise ValueError("优惠券金额必须大于 0")
+        with WRITE_LOCK, self._conn() as conn:
+            for _ in range(5):
+                code = self.generate_coupon_code()
+                try:
+                    cur = conn.execute(
+                        "INSERT INTO coupons(code, email, amount_cents, status,"
+                        " source_order_id, note, created_at) VALUES (?, ?, ?, 'unused', ?, ?, ?)",
+                        (code, email.strip(), amount_cents, source_order_id, note, now_str()))
+                    break
+                except sqlite3.IntegrityError:
+                    continue
+            else:
+                raise ValueError("券码生成失败,请重试")
+            row = conn.execute("SELECT * FROM coupons WHERE id=?", (cur.lastrowid,)).fetchone()
+            return dict(row)
+
+    def validate_coupon(self, code, email):
+        # 下单前校验。返回 (coupon, error):error 非空时 coupon 为 None。
+        c = self.get_coupon_by_code(code)
+        if not c:
+            return None, "优惠券不存在"
+        if c["status"] == "used":
+            return None, "优惠券已使用"
+        if c["status"] == "void":
+            return None, "优惠券已作废"
+        if c["status"] == "locked":
+            return None, "优惠券已绑定一笔待支付订单,先支付或取消那笔订单"
+        if c["email"].strip().lower() != (email or "").strip().lower():
+            return None, "优惠券与下单邮箱不符"
+        if c["amount_cents"] <= 0:
+            return None, "优惠券金额异常"
+        return c, None
+
+    def list_coupons(self, status=None, q=None, limit=30, offset=0):
+        with self._conn() as conn:
+            cond, args = [], []
+            if status:
+                cond.append("status=?")
+                args.append(status)
+            if q:
+                cond.append("(code LIKE ? OR email LIKE ?)")
+                args += [f"%{q}%", f"%{q}%"]
+            where = ("WHERE " + " AND ".join(cond)) if cond else ""
+            rows = conn.execute(
+                f"SELECT * FROM coupons {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+                args + [limit, offset]).fetchall()
+            total = conn.execute(f"SELECT COUNT(*) FROM coupons {where}", args).fetchone()[0]
+            return [dict(r) for r in rows], total
+
+    def list_coupons_by_email(self, email, limit=20):
+        with self._conn() as conn:
+            return [dict(r) for r in conn.execute(
+                "SELECT * FROM coupons WHERE email=? AND status != 'void'"
+                " ORDER BY id DESC LIMIT ?",
+                (email, limit)).fetchall()]
+
+    def get_coupon_by_source_order(self, order_id):
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM coupons WHERE source_order_id=? ORDER BY id DESC LIMIT 1",
+                               (order_id,)).fetchone()
+            return dict(row) if row else None
+
+    def void_coupon(self, coupon_id):
+        # 作废。只对未使用/已锁定的券生效;已使用的券不能作废。
+        with WRITE_LOCK, self._conn() as conn:
+            row = conn.execute("SELECT status FROM coupons WHERE id=?", (coupon_id,)).fetchone()
+            if not row:
+                raise ValueError("优惠券不存在")
+            if row["status"] == "used":
+                raise ValueError("已使用的优惠券不能作废")
+            conn.execute("UPDATE coupons SET status='void', locked_order_id=NULL WHERE id=?",
+                         (coupon_id,))
+
+    def create_order(self, email, pay_type, items, client_ip="", coupon_code=None):
         with WRITE_LOCK:
             conn = self._conn()
             try:
@@ -285,19 +402,44 @@ class Store:
                     rows.append((dict(p), qty))
                 if total <= 0:
                     raise ValueError("订单金额异常")
+                # 优惠券:同一事务内校验并锁定,防一张券同时下两单
+                coupon_id = None
+                discount = 0
+                if coupon_code:
+                    code = self.normalize_coupon_code(coupon_code)
+                    crow = conn.execute("SELECT * FROM coupons WHERE code=?", (code,)).fetchone()
+                    if not crow:
+                        raise ValueError("优惠券不存在")
+                    if crow["status"] == "used":
+                        raise ValueError("优惠券已使用")
+                    if crow["status"] == "void":
+                        raise ValueError("优惠券已作废")
+                    if crow["status"] == "locked":
+                        raise ValueError("优惠券已绑定一笔待支付订单,先支付或取消那笔订单")
+                    if crow["email"].strip().lower() != email.strip().lower():
+                        raise ValueError("优惠券与下单邮箱不符")
+                    if crow["amount_cents"] <= 0:
+                        raise ValueError("优惠券金额异常")
+                    coupon_id = crow["id"]
+                    discount = min(crow["amount_cents"], total)
                 for _ in range(5):
                     no = self.generate_out_trade_no()
                     try:
                         cur = conn.execute(
                             "INSERT INTO orders(out_trade_no, email, total_cents, pay_type,"
-                            " status, client_ip, created_at) VALUES (?, ?, ?, ?, 'unpaid', ?, ?)",
-                            (no, email, total, pay_type, client_ip, now_str()))
+                            " status, client_ip, created_at, coupon_id, discount_cents)"
+                            " VALUES (?, ?, ?, ?, 'unpaid', ?, ?, ?, ?)",
+                            (no, email, total, pay_type, client_ip, now_str(),
+                             coupon_id, discount))
                         break
                     except sqlite3.IntegrityError:
                         continue
                 else:
                     raise ValueError("订单号生成失败,请重试")
                 oid = cur.lastrowid
+                if coupon_id:
+                    conn.execute("UPDATE coupons SET status='locked', locked_order_id=?"
+                                 " WHERE id=? AND status='unused'", (oid, coupon_id))
                 for p, qty in rows:
                     conn.execute(
                         "INSERT INTO order_items(order_id, product_id, product_name, qty,"
@@ -420,6 +562,12 @@ class Store:
                     "UPDATE orders SET status=?, trade_no=?, note=?, paid_at=? WHERE id=?",
                     (status, trade_no or order["trade_no"], note,
                      order["paid_at"] or now_str(), order_id))
+                # 订单进入已付状态,核销锁定的优惠券(只核销锁给本单的那张)
+                if order["coupon_id"]:
+                    conn.execute(
+                        "UPDATE coupons SET status='used', used_at=?, used_order_id=?"
+                        " WHERE id=? AND status='locked' AND locked_order_id=?",
+                        (now_str(), order_id, order["coupon_id"], order_id))
                 conn.commit()
                 return self.get_order_by_no(order["out_trade_no"])
             except Exception:
@@ -429,17 +577,68 @@ class Store:
                 conn.close()
 
     def cancel_order(self, order_id):
-        with WRITE_LOCK, self._conn() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            # 手动现填的内容是专属的,取消后直接删除,绝不能回流库存被二次出售;
-            # 只有预导入的库存卡才释放回未售出。
-            conn.execute("DELETE FROM cards WHERE order_id=? AND source='manual'", (order_id,))
-            conn.execute(
-                "UPDATE cards SET status='unused', order_id=NULL, used_at=NULL"
-                " WHERE order_id=? AND source='stock'",
-                (order_id,))
-            conn.execute("UPDATE orders SET status='cancelled' WHERE id=?", (order_id,))
-            conn.commit()
+        # 取消订单。返回 {"prev_status": ..., "coupon": ...}:
+        # 已取消的订单重复取消是空操作(绝不重复发券);取消已付订单(退款)时
+        # 自动发一张等额优惠券(金额 = 实付金额),供买家重新下单抵扣。
+        # 取消待支付订单时,释放该单锁定的优惠券。
+        with WRITE_LOCK:
+            conn = self._conn()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                order = conn.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
+                if not order:
+                    conn.rollback()
+                    return {"prev_status": None, "coupon": None}
+                prev_status = order["status"]
+                if prev_status == "cancelled":
+                    conn.rollback()
+                    return {"prev_status": prev_status, "coupon": None}
+                # 手动现填的内容是专属的,取消后直接删除,绝不能回流库存被二次出售;
+                # 只有预导入的库存卡才释放回未售出。
+                conn.execute("DELETE FROM cards WHERE order_id=? AND source='manual'", (order_id,))
+                conn.execute(
+                    "UPDATE cards SET status='unused', order_id=NULL, used_at=NULL"
+                    " WHERE order_id=? AND source='stock'",
+                    (order_id,))
+                coupon = None
+                if order["coupon_id"]:
+                    # 本单锁定的券:待支付取消时释放回未使用;已付订单的券已核销,
+                    # WHERE 条件保证核销过的券不会被误释放。
+                    conn.execute(
+                        "UPDATE coupons SET status='unused', locked_order_id=NULL"
+                        " WHERE id=? AND status='locked' AND locked_order_id=?",
+                        (order["coupon_id"], order_id))
+                if prev_status in ("paid", "paid_unfulfilled", "paid_manual"):
+                    paid_cents = order["total_cents"] - (order["discount_cents"] or 0)
+                    if paid_cents > 0:
+                        existing = conn.execute(
+                            "SELECT id FROM coupons WHERE source_order_id=? LIMIT 1",
+                            (order_id,)).fetchone()
+                        if not existing:
+                            for _ in range(5):
+                                code = self.generate_coupon_code()
+                                try:
+                                    cur = conn.execute(
+                                        "INSERT INTO coupons(code, email, amount_cents, status,"
+                                        " source_order_id, note, created_at)"
+                                        " VALUES (?, ?, ?, 'unused', ?, ?, ?)",
+                                        (code, order["email"], paid_cents, order_id,
+                                         "订单退款补偿", now_str()))
+                                    break
+                                except sqlite3.IntegrityError:
+                                    continue
+                            else:
+                                raise ValueError("券码生成失败,请重试")
+                            coupon = dict(conn.execute(
+                                "SELECT * FROM coupons WHERE id=?", (cur.lastrowid,)).fetchone())
+                conn.execute("UPDATE orders SET status='cancelled' WHERE id=?", (order_id,))
+                conn.commit()
+                return {"prev_status": prev_status, "coupon": coupon}
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
 
     def delete_order(self, order_id):
         with WRITE_LOCK, self._conn() as conn:
@@ -514,7 +713,7 @@ class Store:
         with self._conn() as conn:
             return [dict(r) for r in conn.execute(
                 "SELECT * FROM orders WHERE pay_type=? AND status='unpaid'"
-                " AND total_cents=? AND created_at >= ?"
+                " AND total_cents - COALESCE(discount_cents, 0) = ? AND created_at >= ?"
                 " ORDER BY id DESC",
                 (pay_type, total_cents, cutoff)).fetchall()]
 
@@ -538,6 +737,8 @@ class Store:
                     "SELECT COUNT(*) FROM orders WHERE status='paid_unfulfilled'").fetchone()[0],
                 "manual_pending": conn.execute(
                     "SELECT COUNT(*) FROM orders WHERE status='paid_manual'").fetchone()[0],
+                "coupons_unused": conn.execute(
+                    "SELECT COUNT(*) FROM coupons WHERE status='unused'").fetchone()[0],
             }
 
 

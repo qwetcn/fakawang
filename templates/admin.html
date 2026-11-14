@@ -20,6 +20,7 @@
 <button data-tab="products" class="tab">商品</button>
 <button data-tab="cards" class="tab">卡密</button>
 <button data-tab="orders" class="tab">订单</button>
+<button data-tab="coupons" class="tab">优惠券</button>
 <button data-tab="pay" class="tab">支付</button>
 <button data-tab="notify" class="tab">通知</button>
     <button data-tab="settings" class="tab">设置</button>
@@ -100,6 +101,19 @@
 <div class="btn-row"><button class="btn" id="orderPrev">上一页</button><button class="btn" id="orderNext">下一页</button></div>
 </div>
 <div class="panel" id="orderDetail" style="display:none"></div>
+</section>
+
+<section id="tab-coupons" class="tabpage" style="display:none">
+<h3>发优惠券</h3>
+<div class="form-row"><input id="cpEmail" type="email" placeholder="买家邮箱"><input id="cpAmount" placeholder="金额(元),如 12.28"><input id="cpNote" placeholder="备注(可选)"><button class="btn primary" id="btnIssueCoupon">发券</button></div>
+<p class="muted">取消已付订单(退款)时会自动发一张等额优惠券到买家邮箱;这里可以手动补发。券码只能由该邮箱使用,下单时抵扣,可用于任意商品,券不够时付差价。</p>
+<div class="form-row">
+<select id="couponStatus"><option value="">全部状态</option><option value="unused">未使用</option><option value="locked">已锁定</option><option value="used">已使用</option><option value="void">已作废</option></select>
+<input id="couponQ" placeholder="券码/邮箱搜索">
+<button class="btn primary" id="btnSearchCoupons">搜索</button>
+</div>
+<div class="panel"><table class="tbl" id="couponTable"></table></div>
+<div class="btn-row"><button class="btn" id="couponPrev">上一页</button><button class="btn" id="couponNext">下一页</button></div>
 </section>
 
 <section id="tab-pay" class="tabpage" style="display:none">
@@ -199,7 +213,7 @@ document.querySelectorAll('.tab').forEach(function(x){ x.classList.remove('activ
 b.classList.add('active');
 document.querySelectorAll('.tabpage').forEach(function(p){ p.style.display = 'none';});
 document.getElementById('tab-' + b.dataset.tab).style.display = 'block';
-({stats: loadStats, cats: loadCats, products: loadProducts, cards: loadCardsInit, orders: loadOrders, pay: loadPaySettings, notify: loadNotifySettings, settings: loadSettings})[b.dataset.tab]();
+({stats: loadStats, cats: loadCats, products: loadProducts, cards: loadCardsInit, orders: loadOrders, coupons: loadCoupons, pay: loadPaySettings, notify: loadNotifySettings, settings: loadSettings})[b.dataset.tab]();
 };
 });
 document.getElementById('btnLogout').onclick = function(){
@@ -211,7 +225,7 @@ var s = res.d.stats;
 document.getElementById('statGrid').innerHTML =
 [['今日订单', s.today_orders], ['今日收入', money(s.today_cents)], ['累计订单', s.total_orders],
 ['累计收入', money(s.total_cents)], ['商品数', s.products], ['总库存', s.stock],
-['待支付', s.unpaid], ['缺货待处理', s.unfulfilled], ['待手动发货', s.manual_pending]]
+['待支付', s.unpaid], ['缺货待处理', s.unfulfilled], ['待手动发货', s.manual_pending], ['未用优惠券', s.coupons_unused]]
 .map(function(x){ return '<div class="stat"><div class="stat-v">' + x[1] + '</div><div class="stat-k">' + x[0] + '</div></div>';}).join('');
 });
 }
@@ -354,7 +368,7 @@ var st = document.getElementById('orderStatus').value;
 var q = document.getElementById('orderQ').value.trim();
 api('/admin/api/orders?page=' + orderPage + (st? '&status=' + st: '') + (q? '&q=' + encodeURIComponent(q): '')).then(function(res){
 document.getElementById('orderTable').innerHTML = '<tr><th>订单号</th><th>邮箱</th><th>金额</th><th>状态</th><th>时间</th><th>操作</th></tr>' + res.d.orders.map(function(o){
-return '<tr><td class="mono">' + o.out_trade_no + '</td><td>' + esc(o.email) + '</td><td>' + money(o.total_cents) + '</td><td>' + statusText(o.status) + '</td><td>' + o.created_at + '</td><td><button class="btn small" onclick="showOrder(' + o.id + ')">详情</button></td></tr>';
+return '<tr><td class="mono">' + o.out_trade_no + '</td><td>' + esc(o.email) + '</td><td>' + money(o.total_cents) + (o.discount_cents ? ' <span class="muted">券-' + money(o.discount_cents) + '</span>' : '') + '</td><td>' + statusText(o.status) + '</td><td>' + o.created_at + '</td><td><button class="btn small" onclick="showOrder(' + o.id + ')">详情</button></td></tr>';
 }).join('');
 });
 }
@@ -363,6 +377,8 @@ api('/admin/api/orders/' + id).then(function(res){
 var o = res.d.order;
 var html = '<h3>订单 ' + o.out_trade_no + ' · ' + statusText(o.status) + '</h3>'
 + '<p>邮箱: ' + esc(o.email) + ' · 支付方式: ' + esc(o.pay_type) + ' · 网关单号: ' + esc(o.trade_no || '-') + (o.note? '<br><span class="warn">' + esc(o.note) + '</span>': '') + '</p>'
++ (o.discount_cents ? '<p>优惠券: ' + esc(o.used_coupon ? o.used_coupon.code : '') + ' 抵扣 ' + money(o.discount_cents) + ' · 实付 ' + money(o.payable_cents) + '</p>' : '')
++ (o.refund_coupon ? '<p class="warn">已发退款补偿券: ' + esc(o.refund_coupon.code) + ' ' + money(o.refund_coupon.amount_cents) + '</p>' : '')
 + '<table class="tbl"><tr><th>商品</th><th>数量</th><th>单价</th></tr>' + o.items.map(function(it){ return '<tr><td>' + esc(it.product_name) + '</td><td>' + it.qty + '</td><td>' + money(it.unit_price_cents) + '</td></tr>';}).join('') + '</table>';
 var pend = o.items.filter(function(it){ return it.fulfill_mode === 'manual' && (it.qty - (it.allocated || 0)) > 0; });
 if (pend.length && o.status !== 'cancelled') {
@@ -382,7 +398,7 @@ html += '<button class="btn primary" onclick="orderAct(' + id + ', \'refresh\')"
 if (o.status === 'unpaid' || o.status === 'paid_manual' || o.status === 'paid_unfulfilled') {
 html += ' <button class="btn" onclick="orderAct(' + id + ', \'fulfill\')">手动发货</button>';
 }
-if (o.status!== 'cancelled') html += ' <button class="btn" onclick="orderAct(' + id + ', \'cancel\')">取消订单(释放卡密)</button>';
+if (o.status!== 'cancelled') html += ' <button class="btn" onclick="orderAct(' + id + ', \'cancel\')">' + (o.status === 'unpaid' ? '取消订单' : '退款并取消(自动发等额优惠券)') + '</button>';
 if (o.status === 'unpaid' || o.status === 'cancelled') html += ' <button class="btn danger" onclick="orderAct(' + id + ', \'delete\')">删除订单</button>';
 html += '</div>';
 var box = document.getElementById('orderDetail');
@@ -391,7 +407,7 @@ box.innerHTML = html; box.style.display = 'block';
 }
 function orderAct(id, act){
 if (act === 'delete' &&!confirm('删除该订单?')) return;
-if (act === 'cancel' &&!confirm('取消订单并释放已发卡密?')) return;
+if (act === 'cancel' &&!confirm('取消订单并释放已发卡密?已付订单取消后会自动发一张等额优惠券给买家。')) return;
 if (act === 'fulfill' &&!confirm('确认发货?手动发货框里填的内容会直接发给买家,没填的按库存分配;未支付订单会同时标记为已支付,请确认已收款。')) return;
 var path = '/admin/api/orders/' + id + (act === 'delete'? '': '/' + act);
 var body = undefined;
@@ -404,8 +420,41 @@ if (lines.length) mc[ta.getAttribute('data-pid')] = lines;
 body = {manual_cards: mc};
 }
 api(path, act === 'delete'? 'DELETE': 'POST', body).then(function(res){
-if (res.d.ok) { alert(act === 'refresh'? ('查询结果: ' + statusText(res.d.status || '')): '操作成功'); loadOrders(); showOrder(id);}
+if (res.d.ok) {
+var msg = '操作成功';
+if (act === 'refresh') msg = '查询结果: ' + statusText(res.d.status || '');
+else if (act === 'cancel' && res.d.coupon) msg = '已取消订单,并自动发放等额优惠券给买家:\n券码 ' + res.d.coupon.code + '  ¥ ' + (res.d.coupon.amount_cents/100).toFixed(2);
+alert(msg); loadOrders(); showOrder(id);}
 else alert(res.d.error);
+});
+}
+var couponPage = 1;
+function couponStatusText(s){ return {'unused':'未使用','locked':'已锁定','used':'已使用','void':'已作废'}[s] || s;}
+document.getElementById('btnSearchCoupons').onclick = function(){ couponPage = 1; loadCoupons();};
+document.getElementById('couponPrev').onclick = function(){ if (couponPage > 1) { couponPage--; loadCoupons();}};
+document.getElementById('couponNext').onclick = function(){ couponPage++; loadCoupons();};
+function loadCoupons(){
+var st = document.getElementById('couponStatus').value;
+var q = document.getElementById('couponQ').value.trim();
+api('/admin/api/coupons?page=' + couponPage + (st? '&status=' + st: '') + (q? '&q=' + encodeURIComponent(q): '')).then(function(res){
+document.getElementById('couponTable').innerHTML = '<tr><th>券码</th><th>邮箱</th><th>金额</th><th>状态</th><th>备注</th><th>时间</th><th>操作</th></tr>' + res.d.coupons.map(function(c){
+return '<tr><td class="mono">' + c.code + '</td><td>' + esc(c.email) + '</td><td>' + money(c.amount_cents) + '</td><td>' + couponStatusText(c.status) + '</td><td>' + esc(c.note || '') + '</td><td>' + c.created_at + '</td><td>' + ((c.status === 'unused' || c.status === 'locked') ? '<button class="btn small danger" onclick="voidCoupon(' + c.id + ')">作废</button>' : '') + '</td></tr>';
+}).join('');
+});
+}
+document.getElementById('btnIssueCoupon').onclick = function(){
+var email = document.getElementById('cpEmail').value.trim();
+var amount = document.getElementById('cpAmount').value.trim();
+var note = document.getElementById('cpNote').value.trim();
+api('/admin/api/coupons', 'POST', {email: email, amount: amount, note: note}).then(function(res){
+if (res.d.ok) { alert('已发券,券码: ' + res.d.coupon.code + '  ¥ ' + (res.d.coupon.amount_cents/100).toFixed(2)); loadCoupons(); }
+else alert(res.d.error);
+});
+};
+function voidCoupon(id){
+if (!confirm('作废这张优惠券?作废后不能恢复。')) return;
+api('/admin/api/coupons/' + id + '/void', 'POST').then(function(res){
+if (res.d.ok) { alert('已作废'); loadCoupons(); } else alert(res.d.error);
 });
 }
 function loadNotifySettings(){

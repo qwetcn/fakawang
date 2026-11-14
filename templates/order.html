@@ -20,6 +20,10 @@
     <tr><td>{{ it.product_name }}</td><td>{{ it.qty }}</td><td>¥ {{ fmt_cents(it.unit_price_cents) }}</td></tr>
     {% endfor %}
     <tr><td colspan="2"><b>合计</b></td><td><b>¥ {{ fmt_cents(order.total_cents) }}</b></td></tr>
+    {% if order.discount_cents %}
+    <tr><td colspan="2">优惠券抵扣{% if used_coupon %}({{ used_coupon.code }}){% endif %}</td><td>-¥ {{ fmt_cents(order.discount_cents) }}</td></tr>
+    <tr><td colspan="2"><b>实付</b></td><td><b>¥ {{ fmt_cents(payable) }}</b></td></tr>
+    {% endif %}
   </table>
   {% if order.status == 'unpaid' %}
   <div class="btn-row">
@@ -29,6 +33,15 @@
   <p class="muted">支付完成后页面会自动刷新;如已付款但一直显示待支付,点「我已支付」主动查询,或用订单号重新查询。</p>
   {% endif %}
 </div>
+
+{% if refund_coupon %}
+<div class="panel coupon-box">
+  <h3>退款补偿优惠券</h3>
+  <p>这笔订单已退款,已为你发放一张 <b>¥ {{ fmt_cents(refund_coupon.amount_cents) }}</b> 优惠券。重新下单时输入券码即可抵扣,也可用于本店任意商品,券不够时付差价即可。</p>
+  <p>券码: <b class="coupon-code">{{ refund_coupon.code }}</b> <button class="btn small" onclick="copyCoupon()">复制券码</button></p>
+  <p><a class="btn primary" href="/">去重新下单</a></p>
+</div>
+{% endif %}
 
 {% if cards %}
 <div class="panel">
@@ -46,6 +59,11 @@
 {% block script %}
 <script>
 var NO = "{{ order.out_trade_no }}";
+function copyCoupon(){
+  var t = "{{ refund_coupon.code if refund_coupon else '' }}";
+  if (navigator.clipboard) { navigator.clipboard.writeText(t).then(function(){ alert('券码已复制'); }); }
+  else { var ta = document.createElement('textarea'); ta.value = t; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); alert('券码已复制'); }
+}
 var STATUS = "{{ order.status }}";
 function copyCards(i){
   var t = document.getElementById('cards-' + i).textContent;

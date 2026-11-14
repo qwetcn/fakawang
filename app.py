@@ -191,7 +191,7 @@ def notify_ready(cfg):
 
 def _manual_order_email(order):
     items = order.get("items") or []
-    total = f"{order['total_cents'] / 100:.2f}"
+    total = fmt_cents(payable_cents(order))
     lines = [f"订单号:{order['out_trade_no']}", f"买家邮箱:{order['email']}",
              f"金额:¥ {total}", f"下单时间:{order['created_at']}", "商品:"]
     for it in items:
@@ -366,8 +366,15 @@ def qr_data_uri(text):
         return None
 
 
+def payable_cents(order):
+    """订单实付金额(分)= 合计 - 优惠券抵扣,最低 0。所有支付金额核对都以它为准。"""
+    return max(0, order["total_cents"] - (order.get("discount_cents") or 0))
+
+
 def build_next_url(order, cfg):
     """订单的下一步:易支付返回网关地址,当面付/免签返回站内付款页。"""
+    if payable_cents(order) <= 0:
+        return base_url() + "/order/" + order["out_trade_no"]
     kind = method_kind(order["pay_type"])
     if kind == "epay":
         code = order["pay_type"].split(":", 1)[1]
@@ -376,7 +383,7 @@ def build_next_url(order, cfg):
         return epay.build_pay_url(
             cfg["pay_epay_url"], cfg["pay_epay_pid"], cfg["pay_epay_key"], code,
             order["out_trade_no"], base_url() + "/pay/notify", base_url() + "/pay/return",
-            name, fmt_cents(order["total_cents"]))
+            name, fmt_cents(payable_cents(order)))
     if kind == "alipay_f2f":
         return base_url() + "/pay/alipay/" + order["out_trade_no"]
     if kind == "wechat_free":
@@ -400,7 +407,7 @@ def refresh_order_payment(order, cfg):
             money_cents = money_to_cents(data.get("money", "0"))
         except ValueError:
             return False, "网关返回金额异常"
-        if money_cents != order["total_cents"]:
+        if money_cents != payable_cents(order):
             return False, "网关金额与订单不一致,已拒绝发货"
         fulfill_and_notify(order["id"], trade_no=str(data.get("trade_no", "")))
         return True, None
@@ -417,7 +424,7 @@ def refresh_order_payment(order, cfg):
             money_cents = money_to_cents(node.get("total_amount", "0"))
         except ValueError:
             return False, "支付宝返回金额异常"
-        if money_cents != order["total_cents"]:
+        if money_cents != payable_cents(order):
             return False, "支付宝金额与订单不一致,已拒绝发货"
         fulfill_and_notify(order["id"], trade_no=str(node.get("trade_no", "")))
         return True, None
@@ -480,7 +487,12 @@ def order_page(out_trade_no):
     if not order:
         abort(404)
     cards = store.get_order_cards(order["id"]) if order["status"] in ("paid", "paid_unfulfilled", "paid_manual") else {}
-    return render_template("order.html", order=order, cards=cards)
+    refund_coupon = (store.get_coupon_by_source_order(order["id"])
+                     if order["status"] == "cancelled" else None)
+    used_coupon = store.get_coupon(order["coupon_id"]) if order.get("coupon_id") else None
+    return render_template("order.html", order=order, cards=cards,
+                           refund_coupon=refund_coupon, used_coupon=used_coupon,
+                           payable=payable_cents(order))
 
 
 @app.route("/search")
@@ -514,16 +526,20 @@ def api_create_order():
     ip = request.remote_addr or ""
     if not allow(f"order:{ip}", 20):
         return jsonify({"ok": False, "error": "操作太频繁,请稍后再试"}), 429
-    methods = available_pay_methods()
-    if not methods:
-        return jsonify({"ok": False, "error": "本站尚未配置任何支付方式,请联系站长"}), 503
     data = request.get_json(silent=True) or {}
+    coupon_code = str(data.get("coupon_code", "") or "").strip() or None
+    methods = available_pay_methods()
+    if not methods and not coupon_code:
+        return jsonify({"ok": False, "error": "本站尚未配置任何支付方式,请联系站长"}), 503
     email = str(data.get("email", "")).strip()
     if not EMAIL_RE.match(email):
         return jsonify({"ok": False, "error": "邮箱格式不正确"}), 400
     pay_method = str(data.get("pay_type", "")).strip()
     if pay_method not in [m["id"] for m in methods]:
-        return jsonify({"ok": False, "error": "请选择支付方式"}), 400
+        # 没选支付方式时,只有带券才允许继续(券不够全额抵扣时后面会取消订单并报错)
+        if not (coupon_code and pay_method in ("", "coupon")):
+            return jsonify({"ok": False, "error": "请选择支付方式"}), 400
+        pay_method = "coupon"
     items = data.get("items") or []
     if not isinstance(items, list) or not items or len(items) > 20:
         return jsonify({"ok": False, "error": "请选择商品"}), 400
@@ -536,11 +552,40 @@ def api_create_order():
         if clean[-1]["qty"] <= 0:
             return jsonify({"ok": False, "error": "购买数量错误"}), 400
     try:
-        order = store.create_order(email, pay_method, clean, client_ip=ip)
+        order = store.create_order(email, pay_method, clean, client_ip=ip,
+                                   coupon_code=coupon_code)
     except ValueError as e:
         return jsonify({"ok": False, "error": str(e)}), 400
+    if payable_cents(order) <= 0:
+        # 优惠券全额抵扣:无需付款,直接发货(券在发货时核销)
+        order = fulfill_and_notify(order["id"], trade_no="COUPON")
+        return jsonify({"ok": True, "out_trade_no": order["out_trade_no"],
+                        "next": base_url() + "/order/" + order["out_trade_no"],
+                        "payable_cents": 0, "discount_cents": order["discount_cents"]})
+    if pay_method == "coupon":
+        # 券不够全额抵扣,又没选支付方式:取消刚建的订单(券锁定随之释放)
+        store.cancel_order(order["id"])
+        return jsonify({"ok": False, "error": "优惠券不够全额抵扣,请选择支付方式付差价"}), 400
     return jsonify({"ok": True, "out_trade_no": order["out_trade_no"],
-                    "next": build_next_url(order, pay_cfg())})
+                    "next": build_next_url(order, pay_cfg()),
+                    "payable_cents": payable_cents(order),
+                    "discount_cents": order["discount_cents"]})
+
+
+@app.route("/api/coupons/validate", methods=["POST"])
+def api_coupon_validate():
+    if not allow(f"coupon:{request.remote_addr or ''}", 30):
+        return jsonify({"ok": False, "error": "操作太频繁,请稍后再试"}), 429
+    data = request.get_json(silent=True) or {}
+    code = str(data.get("code", "") or "")
+    email = str(data.get("email", "") or "").strip()
+    if not code.strip() or not EMAIL_RE.match(email):
+        return jsonify({"ok": False, "error": "请输入券码和下单邮箱"}), 400
+    coupon, err = store.validate_coupon(code, email)
+    if err:
+        return jsonify({"ok": False, "error": err}), 400
+    return jsonify({"ok": True, "code": coupon["code"],
+                    "amount_cents": coupon["amount_cents"]})
 
 
 @app.route("/api/order/<out_trade_no>/status")
@@ -551,6 +596,8 @@ def api_order_status(out_trade_no):
     if not order:
         return jsonify({"ok": False, "error": "订单不存在"}), 404
     out = {"ok": True, "status": order["status"], "total_cents": order["total_cents"],
+           "discount_cents": order.get("discount_cents") or 0,
+           "payable_cents": payable_cents(order),
            "paid_at": order["paid_at"], "note": order["note"]}
     if order["status"] in ("paid", "paid_unfulfilled", "paid_manual"):
         out["cards"] = store.get_order_cards(order["id"])
@@ -588,7 +635,9 @@ def api_order_refresh(out_trade_no):
 
 def _order_summary(order):
     return {"out_trade_no": order["out_trade_no"], "email": order["email"],
-            "total_cents": order["total_cents"], "pay_type": order["pay_type"],
+            "total_cents": order["total_cents"],
+            "discount_cents": order.get("discount_cents") or 0,
+            "payable_cents": payable_cents(order), "pay_type": order["pay_type"],
             "status": order["status"], "created_at": order["created_at"],
             "paid_at": order["paid_at"]}
 
@@ -600,10 +649,15 @@ def api_orders_search():
         return jsonify({"ok": False, "error": "请输入订单号或邮箱"}), 400
     order = store.get_order_by_no(q)
     if order:
-        return jsonify({"ok": True, "orders": [_order_summary(order)]})
+        return jsonify({"ok": True, "orders": [_order_summary(order)], "coupons": []})
     if EMAIL_RE.match(q):
-        return jsonify({"ok": True, "orders": [_order_summary(o) for o in store.search_orders_by_email(q)]})
-    return jsonify({"ok": True, "orders": []})
+        coupons = [{"code": c["code"], "amount_cents": c["amount_cents"],
+                    "status": c["status"], "created_at": c["created_at"], "note": c["note"]}
+                   for c in store.list_coupons_by_email(q)]
+        return jsonify({"ok": True,
+                        "orders": [_order_summary(o) for o in store.search_orders_by_email(q)],
+                        "coupons": coupons})
+    return jsonify({"ok": True, "orders": [], "coupons": []})
 
 
 # ---------- 付款页(支付宝跳转 / 微信免签) ----------
@@ -627,7 +681,7 @@ def pay_alipay_page(out_trade_no):
         try:
             qr_link = alipay.precreate(
                 alipay_cfg(cfg), order["out_trade_no"],
-                Decimal(order["total_cents"]) / 100, subject,
+                Decimal(payable_cents(order)) / 100, subject,
                 base_url() + "/pay/alipay/notify")
             qr_img = qr_data_uri(qr_link)
         except alipay.AlipayError as e:
@@ -635,7 +689,7 @@ def pay_alipay_page(out_trade_no):
     in_wechat = "MicroMessenger" in request.headers.get("User-Agent", "")
     return render_template("pay_qr.html", order=order, channel="alipay",
                            qr_img=qr_img, qr_link=qr_link, error=error,
-                           in_wechat=in_wechat)
+                           in_wechat=in_wechat, payable=payable_cents(order))
 
 
 @app.route("/pay/wechat/<out_trade_no>")
@@ -659,7 +713,7 @@ def pay_wechat_page(out_trade_no):
         error = "店主尚未配置微信收款码,请联系站长"
     return render_template("pay_qr.html", order=order, channel="wechat",
                            qr_img=qr_img, qr_link=qr_link, error=error,
-                           in_wechat=False)
+                           in_wechat=False, payable=payable_cents(order))
 
 
 # ---------- 支付回调 ----------
@@ -680,7 +734,7 @@ def pay_notify():
         money_cents = money_to_cents(params.get("money", "0"))
     except ValueError:
         return "fail", 400
-    if money_cents != order["total_cents"]:
+    if money_cents != payable_cents(order):
         return "fail", 400
     fulfill_and_notify(order["id"], trade_no=params.get("trade_no", ""))
     return "success"
@@ -703,7 +757,7 @@ def pay_alipay_notify():
         money_cents = money_to_cents(params.get("total_amount", "0"))
     except ValueError:
         return "fail", 400
-    if money_cents != order["total_cents"]:
+    if money_cents != payable_cents(order):
         return "fail", 400
     fulfill_and_notify(order["id"], trade_no=params.get("trade_no", ""))
     return "success"
@@ -752,7 +806,7 @@ def pay_wechat_notify():
         if not order or order["pay_type"] != "wechat_free":
             store.log_callback("wechat_free", key, payload, "no_order")
             return jsonify({"ok": False, "error": "订单不存在或不是微信免签订单"})
-        if order["total_cents"] != amount_cents:
+        if payable_cents(order) != amount_cents:
             store.log_callback("wechat_free", key, payload, "amount_mismatch", out_no)
             return jsonify({"ok": False, "error": "金额与订单不一致"})
         fulfill_and_notify(order["id"], trade_no=str(params.get("txid", "")))
@@ -1220,6 +1274,9 @@ def admin_order_detail(oid):
         for it in order["items"]:
             it["pending"] = it["qty"] - it["allocated"]
     order["cards"] = store.get_order_cards(oid)
+    order["used_coupon"] = store.get_coupon(order["coupon_id"]) if order.get("coupon_id") else None
+    order["refund_coupon"] = store.get_coupon_by_source_order(oid)
+    order["payable_cents"] = payable_cents(order)
     return jsonify({"ok": True, "order": order})
 
 
@@ -1255,8 +1312,12 @@ def admin_order_fulfill(oid):
 def admin_order_cancel(oid):
     require_admin()
     check_csrf()
-    store.cancel_order(oid)
-    return jsonify({"ok": True})
+    result = store.cancel_order(oid)
+    out = {"ok": True, "prev_status": result["prev_status"]}
+    if result["coupon"]:
+        out["coupon"] = {"code": result["coupon"]["code"],
+                         "amount_cents": result["coupon"]["amount_cents"]}
+    return jsonify(out)
 
 
 @app.route("/admin/api/orders/<int:oid>", methods=["DELETE"])
@@ -1285,6 +1346,49 @@ def admin_order_refresh(oid):
     if err:
         return jsonify({"ok": False, "error": err}), 502
     return jsonify({"ok": True, "status": "paid" if changed else "unpaid"})
+
+
+@app.route("/admin/api/coupons")
+def admin_coupons():
+    require_admin()
+    status = request.args.get("status") or None
+    q = request.args.get("q") or None
+    page = max(1, _to_int(request.args.get("page"), 1))
+    rows, total = store.list_coupons(status=status, q=q, limit=30, offset=(page - 1) * 30)
+    return jsonify({"ok": True, "coupons": rows, "total": total})
+
+
+@app.route("/admin/api/coupons", methods=["POST"])
+def admin_coupon_issue():
+    require_admin()
+    check_csrf()
+    data = request.get_json(silent=True) or {}
+    email = str(data.get("email", "")).strip()
+    if not EMAIL_RE.match(email):
+        return jsonify({"ok": False, "error": "邮箱格式不正确"}), 400
+    try:
+        amount = money_to_cents(str(data.get("amount", "")))
+    except ValueError:
+        return jsonify({"ok": False, "error": "金额格式不正确"}), 400
+    if amount <= 0 or amount > 100000000:
+        return jsonify({"ok": False, "error": "金额需在 0.01~1000000 元之间"}), 400
+    note = str(data.get("note", "") or "")[:100]
+    try:
+        coupon = store.create_coupon(email, amount, note=note)
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    return jsonify({"ok": True, "coupon": coupon})
+
+
+@app.route("/admin/api/coupons/<int:cid>/void", methods=["POST"])
+def admin_coupon_void(cid):
+    require_admin()
+    check_csrf()
+    try:
+        store.void_coupon(cid)
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    return jsonify({"ok": True})
 
 
 if __name__ == "__main__":

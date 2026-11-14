@@ -13,7 +13,17 @@
       {% endfor %}
       {% if not pay_methods %}<span class="warn">本站尚未配置支付方式,请联系站长</span>{% endif %}
     </div>
+  <label>优惠券(可选)</label>
+  <div class="coupon-row">
+    <input id="couponCode" placeholder="输入券码,如 YHQ-XXXXXXXXXXXX">
+    <button type="button" class="btn" id="btnCoupon">使用</button>
+    <button type="button" class="btn" id="btnCouponClear" style="display:none">取消</button>
+  </div>
+  <p class="muted" id="couponMsg" style="display:none"></p>
+  <div class="total" id="origLine" style="display:none">原价: <b id="origVal"></b></div>
+  <div class="total" id="discountLine" style="display:none">优惠券抵扣: <b id="discountVal"></b></div>
   <div class="total">合计: <b id="total">¥ 0.00</b></div>
+  <p class="muted" id="zeroNote" style="display:none">优惠券已全额抵扣,下单后直接发货,无需付款。</p>
   <button class="btn primary" id="btnCheckout">去支付</button>
   <p class="error" id="errBox" style="display:none"></p>
 </div>
@@ -21,6 +31,24 @@
 {% block script %}
 <script>
 var PRODUCTS = {};
+var COUPON = null;
+function updateTotals(total){
+  var disc = COUPON ? Math.min(COUPON.amount, total) : 0;
+  document.getElementById('total').textContent = '¥ ' + ((total - disc) / 100).toFixed(2);
+  document.getElementById('origLine').style.display = disc ? 'block' : 'none';
+  document.getElementById('discountLine').style.display = disc ? 'block' : 'none';
+  if (disc) {
+    document.getElementById('origVal').textContent = '¥ ' + (total / 100).toFixed(2);
+    document.getElementById('discountVal').textContent = '-¥ ' + (disc / 100).toFixed(2);
+  }
+  document.getElementById('zeroNote').style.display = (disc && total - disc <= 0) ? 'block' : 'none';
+}
+function clearCoupon(){
+  COUPON = null;
+  document.getElementById('couponMsg').style.display = 'none';
+  document.getElementById('btnCouponClear').style.display = 'none';
+  render();
+}
 fetch('/api/products').then(function(r){ return r.json(); }).then(function(d){
   d.products.forEach(function(p){ PRODUCTS[p.id] = p; });
   render();
@@ -47,7 +75,7 @@ function render(){
       + '</div><div><b>¥ ' + (sub/100).toFixed(2) + '</b> <button data-i="'+i+'" class="rm">删除</button></div></div>';
   });
   box.innerHTML = html;
-  document.getElementById('total').textContent = '¥ ' + (total/100).toFixed(2);
+  updateTotals(total);
   document.getElementById('checkoutBox').style.display = 'block';
   document.getElementById('btnCheckout').disabled = !valid;
   box.querySelectorAll('.rm').forEach(function(b){
@@ -62,6 +90,31 @@ function render(){
   });
 }
 function esc(s){ return String(s).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+document.getElementById('email').onchange = clearCoupon;
+document.getElementById('btnCouponClear').onclick = function(){ document.getElementById('couponCode').value = ''; clearCoupon(); };
+document.getElementById('btnCoupon').onclick = function(){
+  var email = document.getElementById('email').value.trim();
+  var code = document.getElementById('couponCode').value.trim();
+  var err = document.getElementById('errBox');
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { err.textContent = '请先填写邮箱,优惠券与邮箱绑定'; err.style.display = 'block'; return; }
+  if (!code) { err.textContent = '请输入券码'; err.style.display = 'block'; return; }
+  var btn = this; btn.disabled = true;
+  fetch('/api/coupons/validate', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({code: code, email: email})})
+  .then(function(r){ return r.json(); })
+  .then(function(d){
+    btn.disabled = false;
+    if (!d.ok) { err.textContent = d.error || '优惠券不可用'; err.style.display = 'block'; return; }
+    COUPON = {code: d.code, amount: d.amount_cents};
+    var m = document.getElementById('couponMsg');
+    m.textContent = '已使用优惠券 ' + d.code + ',抵扣 ¥ ' + (d.amount_cents / 100).toFixed(2) + '(可用于本店任意商品,多退少补付差价)';
+    m.style.display = 'block';
+    document.getElementById('btnCouponClear').style.display = 'inline-block';
+    err.style.display = 'none';
+    render();
+  })
+  .catch(function(){ btn.disabled = false; err.textContent = '网络异常,请重试'; err.style.display = 'block'; });
+};
 document.getElementById('btnCheckout').onclick = function(){
   var email = document.getElementById('email').value.trim();
   var err = document.getElementById('errBox');
@@ -69,7 +122,7 @@ document.getElementById('btnCheckout').onclick = function(){
   var r = document.querySelector('input[name=paytype]:checked');
   var btn = this; btn.disabled = true; btn.textContent = '正在创建订单…';
   fetch('/api/order/create', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({email: email, pay_type: r ? r.value : '', items: getCart()})})
+    body: JSON.stringify({email: email, pay_type: r ? r.value : '', items: getCart(), coupon_code: COUPON ? COUPON.code : ''})})
   .then(function(res){ return res.json().then(function(d){ return {s: res.status, d: d}; }); })
   .then(function(res){
     if (!res.d.ok) { err.textContent = res.d.error || '下单失败'; err.style.display = 'block'; btn.disabled = false; btn.textContent = '去支付'; return; }
