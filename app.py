@@ -56,31 +56,49 @@ DB_PATH = os.environ.get("DB_PATH", os.path.join(BASE_DIR, "data", "shop.db"))
 SITE_URL = os.environ.get("SITE_URL", "").rstrip("/")
 
 
+def _read_or_create_secret(path, gen):
+    """读现有密钥文件;不存在则原子创建(O_EXCL,0600)。返回 (值, 是否本次创建)。
+    多 worker 同时启动时,后到的进程会等先到的进程写完(文件存在但为空时
+    轮询),绝不互相覆盖;残留的空文件(写一半时进程崩溃)超过 5 秒会被删掉重建。"""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    for _ in range(100):
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            v = gen()
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(v)
+            return v, True
+        except FileExistsError:
+            try:
+                st = os.stat(path)
+                v = open(path, encoding="utf-8").read().strip()
+            except OSError:
+                v, st = "", None
+            if v:
+                return v, False
+            if st is not None and st.st_size == 0 and time.time() - st.st_mtime > 5:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+            time.sleep(0.1)
+    raise RuntimeError(f"secret file stuck empty: {path}")
+
+
 def _admin_password():
     """后台密码:优先 .env;未设或为空时自动生成强密码存入 data/.admin_password
     (0600),并在首次启动日志里打印一次。绝不使用任何内置默认值。"""
     v = os.environ.get("ADMIN_PASSWORD", "").strip()
     if v:
+        if len(v) < 8:
+            print("[fakawang] 警告:ADMIN_PASSWORD 少于 8 位,建议改成更强的密码。", flush=True)
         return v
     p = os.path.join(BASE_DIR, "data", ".admin_password")
-    os.makedirs(os.path.dirname(p), exist_ok=True)
-    if os.path.exists(p):
-        v = open(p, encoding="utf-8").read().strip()
-        if v:
-            return v
-    v = secrets.token_urlsafe(16)
-    try:
-        fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(v)
-    except FileExistsError:
-        v = open(p, encoding="utf-8").read().strip() or v
-        if open(p, encoding="utf-8").read().strip() == "":
-            with open(p, "w", encoding="utf-8") as f:
-                f.write(v)
-    print("[fakawang] 未设置 ADMIN_PASSWORD,已自动生成后台密码(见 data/.admin_password),"
-          "请登录后在 .env 里改成自己的密码。", flush=True)
-    print(f"[fakawang] 后台初始密码: {v}", flush=True)
+    v, created = _read_or_create_secret(p, lambda: secrets.token_urlsafe(16))
+    if created:
+        print("[fakawang] 未设置 ADMIN_PASSWORD,已自动生成后台密码(见 data/.admin_password),"
+              "请登录后在 .env 里改成自己的密码。", flush=True)
+        print(f"[fakawang] 后台初始密码: {v}", flush=True)
     return v
 
 
@@ -109,17 +127,11 @@ def _secret_key():
     if os.environ.get("SECRET_KEY"):
         return os.environ["SECRET_KEY"]
     p = os.path.join(BASE_DIR, "data", ".secret")
-    os.makedirs(os.path.dirname(p), exist_ok=True)
-    if os.path.exists(p):
-        try:
-            os.chmod(p, 0o600)
-        except OSError:
-            pass
-        return open(p, encoding="utf-8").read().strip()
-    v = secrets.token_hex(32)
-    fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(v)
+    v, _ = _read_or_create_secret(p, lambda: secrets.token_hex(32))
+    try:
+        os.chmod(p, 0o600)
+    except OSError:
+        pass
     return v
 
 
@@ -317,8 +329,8 @@ def money_to_cents(s):
         d = Decimal(str(s).strip())
     except (InvalidOperation, ValueError):
         raise ValueError("金额格式错误")
-    if d <= 0 or d != d.quantize(Decimal("0.01")):
-        raise ValueError("金额格式错误(最多两位小数且大于 0)")
+    if d <= 0 or d > Decimal("100000000") or d != d.quantize(Decimal("0.01")):
+        raise ValueError("金额格式错误(最多两位小数,大于 0 且不超过 1 亿元)")
     return int(d * 100)
 
 
@@ -633,6 +645,11 @@ def api_order_refresh(out_trade_no):
     return jsonify({"ok": True, "status": "paid" if changed else "unpaid"})
 
 
+def _mask_coupon_code(code):
+    code = code or ""
+    return code[:4] + "****" + code[-4:] if len(code) > 8 else "****"
+
+
 def _order_summary(order):
     return {"out_trade_no": order["out_trade_no"], "email": order["email"],
             "total_cents": order["total_cents"],
@@ -651,7 +668,9 @@ def api_orders_search():
     if order:
         return jsonify({"ok": True, "orders": [_order_summary(order)], "coupons": []})
     if EMAIL_RE.match(q):
-        coupons = [{"code": c["code"], "amount_cents": c["amount_cents"],
+        # 邮箱是谁都能猜到的弱身份,完整券码只在订单页(订单号不可猜)显示;
+        # 这里只给脱敏券码,防止知道邮箱的人直接盗走未用券。
+        coupons = [{"code": _mask_coupon_code(c["code"]), "amount_cents": c["amount_cents"],
                     "status": c["status"], "created_at": c["created_at"], "note": c["note"]}
                    for c in store.list_coupons_by_email(q)]
         return jsonify({"ok": True,
@@ -975,7 +994,12 @@ def admin_settings():
     data = request.get_json(silent=True) or {}
     for k in ("site_name", "announcement", "contact_text", "contact_url", "help_text"):
         if k in data:
-            store.set_setting(k, str(data[k]))
+            val = str(data[k])
+            if k == "contact_url":
+                val = val.strip()
+                if val and not val.startswith(("http://", "https://", "mailto:")):
+                    return jsonify({"ok": False, "error": "客服链接需以 http://、https:// 或 mailto: 开头"}), 400
+            store.set_setting(k, val)
     return jsonify({"ok": True})
 
 
@@ -1397,4 +1421,7 @@ def admin_coupon_void(cid):
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8000")))
+    # 默认只监听本机:公网流量必须经反代(Caddy/nginx),否则攻击者可伪造
+    # X-Forwarded-For 绕过按 IP 限流。确需直连时用 HOST=0.0.0.0 显式指定。
+    app.run(host=os.environ.get("HOST", "127.0.0.1"),
+            port=int(os.environ.get("PORT", "8000")))

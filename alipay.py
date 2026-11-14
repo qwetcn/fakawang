@@ -98,7 +98,11 @@ def verify_params(params, public_pem):
     sign = params.get("sign", "")
     if not sign:
         return False
-    return verify_content(build_sign_content(params), str(sign), load_public_key(public_pem))
+    try:
+        pub = load_public_key(public_pem)
+    except ValueError:
+        return False
+    return verify_content(build_sign_content(params), str(sign), pub)
 
 
 def _extract_node(raw_text, node_key):
@@ -175,7 +179,10 @@ def _call(cfg, method, biz_content, timeout=20):
     }
     if cfg.get("notify_url"):
         params["notify_url"] = cfg["notify_url"]
-    params["sign"] = sign_params(params, cfg["private_key"])
+    try:
+        params["sign"] = sign_params(params, cfg["private_key"])
+    except ValueError as e:
+        raise AlipayError(f"支付宝签名失败:{e}")
     body = urllib.parse.urlencode(params).encode("utf-8")
     req = urllib.request.Request(gateway, data=body,
                                  headers={"Content-Type": "application/x-www-form-urlencoded"})

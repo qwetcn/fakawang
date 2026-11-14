@@ -262,11 +262,15 @@ class Store:
     def delete_cards(self, card_ids):
         if not card_ids:
             return 0
+        total = 0
         with WRITE_LOCK, self._conn() as conn:
-            cur = conn.execute(
-                "DELETE FROM cards WHERE id IN (%s) AND status='unused'"
-                % ",".join("?" * len(card_ids)), card_ids)
-            return cur.rowcount
+            for i in range(0, len(card_ids), 500):
+                batch = card_ids[i:i + 500]
+                cur = conn.execute(
+                    "DELETE FROM cards WHERE id IN (%s) AND status='unused'"
+                    % ",".join("?" * len(batch)), batch)
+                total += cur.rowcount
+        return total
 
     def stock_of(self, product_id):
         with self._conn() as conn:
@@ -402,7 +406,7 @@ class Store:
                             raise ValueError(f"{p['name']} 库存不足,仅剩 {stock} 件")
                     total += p["price_cents"] * qty
                     rows.append((dict(p), qty))
-                if total <= 0:
+                if total <= 0 or total > 10 ** 12:
                     raise ValueError("订单金额异常")
                 # 优惠券:同一事务内校验并锁定,防一张券同时下两单
                 coupon_id = None
