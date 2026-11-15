@@ -449,11 +449,32 @@ def refresh_order_payment(order, cfg):
     return False, ""
 
 
+@app.before_request
+def _force_https():
+    """站点配了 https 域名时,访客走 http 就 308 跳到 https(保留路径和参数)。
+    只认代理明确传来的 X-Forwarded-Proto: http——直连(无此请求头)不跳,避免
+    无 TLS 的直连部署陷入重定向循环;本机回环地址也不跳,保证健康检查和本地调试。"""
+    if not SITE_URL.startswith("https://"):
+        return None
+    proto = request.headers.get("X-Forwarded-Proto", "")
+    proto = proto.split(",")[-1].strip().lower() if proto else ""
+    if proto != "http":
+        return None
+    host = request.host.split(":")[0].lower()
+    if host in ("127.0.0.1", "localhost", "::1") or host.startswith("127."):
+        return None
+    target_host = request.host[:-3] if request.host.endswith(":80") else request.host
+    qs = request.query_string.decode("utf-8", "ignore")
+    return redirect("https://" + target_host + request.path + ("?" + qs if qs else ""), code=308)
+
+
 @app.after_request
 def _security_headers(resp):
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
     resp.headers.setdefault("X-Frame-Options", "DENY")
     resp.headers.setdefault("Referrer-Policy", "same-origin")
+    if SITE_URL.startswith("https://"):
+        resp.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
     if request.path.startswith(("/admin", "/order/", "/api/order/")):
         resp.headers["Cache-Control"] = "no-store"
     return resp
@@ -624,6 +645,8 @@ def api_order_status(out_trade_no):
 
 @app.route("/api/order/<out_trade_no>/repay", methods=["POST"])
 def api_order_repay(out_trade_no):
+    if not allow(f"repay:{request.remote_addr or ''}", 30):
+        return jsonify({"ok": False, "error": "操作太频繁,请稍后再试"}), 429
     order = store.get_order_by_no(out_trade_no)
     if not order:
         return jsonify({"ok": False, "error": "订单不存在"}), 404
@@ -667,6 +690,8 @@ def _order_summary(order):
 
 @app.route("/api/orders/search")
 def api_orders_search():
+    if not allow(f"search:{request.remote_addr or ''}", 30):
+        return jsonify({"ok": False, "error": "操作太频繁,请稍后再试"}), 429
     q = (request.args.get("q") or "").strip()
     if not q:
         return jsonify({"ok": False, "error": "请输入订单号或邮箱"}), 400
@@ -951,7 +976,7 @@ def check_csrf():
 
 @app.route("/admin/login", methods=["GET", "POST"])
 def admin_login():
-    if request.method == "GET":
+    if request.method != "POST":
         if session.get("admin"):
             return redirect("/admin")
         return render_template("admin_login.html")
