@@ -18,8 +18,9 @@ import threading
 import time
 from decimal import Decimal, InvalidOperation
 
-from flask import Flask, abort, jsonify, redirect, render_template, request, session
+from flask import Flask, abort, jsonify, redirect, render_template, request, send_from_directory, session
 from markupsafe import escape as _esc
+from PIL import Image
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 import alipay
@@ -142,6 +143,10 @@ app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
                   MAX_CONTENT_LENGTH=5 * 1024 * 1024)
 
 store = Store(DB_PATH)
+
+# 商品上传图片存在数据库旁边的 uploads/ 里(与 data/ 同卷,容器重建不丢)。
+UPLOAD_DIR = os.path.join(os.path.dirname(DB_PATH), "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
 def seed_pay_settings():
@@ -466,6 +471,11 @@ def _force_https():
     target_host = request.host[:-3] if request.host.endswith(":80") else request.host
     qs = request.query_string.decode("utf-8", "ignore")
     return redirect("https://" + target_host + request.path + ("?" + qs if qs else ""), code=308)
+
+
+@app.errorhandler(413)
+def _too_large(_e):
+    return jsonify({"ok": False, "error": "请求体过大(最大 5MB)"}), 413
 
 
 @app.after_request
@@ -1242,6 +1252,75 @@ def _product_fields(data, partial=False):
     return fields
 
 
+# ---------- 商品图片上传 ----------
+# 允许的图片格式(以 Pillow 识别到的格式为准,不看文件名后缀;SVG 可内嵌脚本,一律不收)。
+_UPLOAD_FORMATS = {"PNG": ("png", "image/png"), "JPEG": ("jpg", "image/jpeg"),
+                   "GIF": ("gif", "image/gif"), "WEBP": ("webp", "image/webp")}
+_UPLOAD_RE = re.compile(r"^/uploads/([0-9a-f]{24}\.(?:png|jpg|jpeg|gif|webp))$")
+_UPLOAD_NAME_RE = re.compile(r"^[0-9a-f]{24}\.(?:png|jpg|jpeg|gif|webp)$")
+_MAX_IMAGE_PIXELS = 16_000_000  # 16MP,防解压炸弹
+_MAX_IMAGE_SIDE = 4096
+
+
+def _delete_upload_if_orphaned(url):
+    """删掉不再被任何商品引用的上传图片(换图/删商品时调用);失败时静默跳过。"""
+    m = _UPLOAD_RE.match(url or "")
+    if not m:
+        return
+    try:
+        if store.count_image_refs(url) > 0:
+            return
+        os.unlink(os.path.join(UPLOAD_DIR, m.group(1)))
+    except OSError:
+        pass
+
+
+@app.route("/uploads/<name>")
+def serve_upload(name):
+    if not _UPLOAD_NAME_RE.match(name):
+        abort(404)
+    ext = name.rsplit(".", 1)[1].lower()
+    mime = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+            "gif": "image/gif", "webp": "image/webp"}[ext]
+    return send_from_directory(UPLOAD_DIR, name, mimetype=mime, max_age=86400)
+
+
+@app.route("/admin/api/upload-image", methods=["POST"])
+def admin_upload_image():
+    require_admin()
+    check_csrf()
+    f = request.files.get("file")
+    if f is None or not f.filename:
+        return jsonify({"ok": False, "error": "请选择图片文件"}), 400
+    data = f.read()
+    if not data:
+        return jsonify({"ok": False, "error": "文件为空"}), 400
+    try:
+        with Image.open(io.BytesIO(data)) as img:
+            fmt = img.format
+            w, h = img.size
+            img.verify()
+    except Exception:
+        return jsonify({"ok": False, "error": "不是有效的图片文件"}), 400
+    if fmt not in _UPLOAD_FORMATS:
+        return jsonify({"ok": False, "error": "只支持 PNG/JPEG/GIF/WebP 图片"}), 400
+    if w > _MAX_IMAGE_SIDE or h > _MAX_IMAGE_SIDE or w * h > _MAX_IMAGE_PIXELS:
+        return jsonify({"ok": False, "error": "图片尺寸过大(最长边 4096px,总像素 16MP)"}), 400
+    ext = _UPLOAD_FORMATS[fmt][0]
+    for _ in range(3):
+        name = secrets.token_hex(12) + "." + ext
+        path = os.path.join(UPLOAD_DIR, name)
+        try:
+            with open(path, "xb") as out:
+                out.write(data)
+            break
+        except FileExistsError:
+            continue
+    else:
+        return jsonify({"ok": False, "error": "保存失败,请重试"}), 500
+    return jsonify({"ok": True, "url": "/uploads/" + name})
+
+
 @app.route("/admin/api/products", methods=["GET", "POST"])
 def admin_products():
     require_admin()
@@ -1262,17 +1341,23 @@ def admin_product(pid):
     require_admin()
     check_csrf()
     if request.method == "DELETE":
+        old = store.get_product(pid)
         try:
             store.delete_product(pid)
         except ValueError as e:
             return jsonify({"ok": False, "error": str(e)}), 400
+        if old:
+            _delete_upload_if_orphaned(old.get("image_url", ""))
         return jsonify({"ok": True})
     data = request.get_json(silent=True) or {}
     try:
         fields = _product_fields(data, partial=True)
     except (ValueError, TypeError) as e:
         return jsonify({"ok": False, "error": str(e)}), 400
+    old = store.get_product(pid) if "image_url" in fields else None
     store.update_product(pid, **fields)
+    if old and old.get("image_url") != fields["image_url"]:
+        _delete_upload_if_orphaned(old.get("image_url", ""))
     return jsonify({"ok": True})
 
 

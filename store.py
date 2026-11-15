@@ -235,6 +235,12 @@ class Store:
             conn.execute("DELETE FROM cards WHERE product_id=?", (pid,))
             conn.execute("DELETE FROM products WHERE id=?", (pid,))
 
+    def count_image_refs(self, image_url):
+        """引用某图片地址的商品数(清理上传文件时判断是否还有商品在用)。"""
+        with self._conn() as conn:
+            return conn.execute("SELECT COUNT(*) FROM products WHERE image_url=?",
+                                (image_url,)).fetchone()[0]
+
     def add_cards(self, product_id, lines):
         lines = [ln.strip() for ln in lines if ln.strip()]
         if not lines:
