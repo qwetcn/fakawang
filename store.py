@@ -8,9 +8,13 @@ import secrets
 import sqlite3
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 WRITE_LOCK = threading.RLock()
+
+# 容器默认 UTC,但订单时间要和支付宝(按北京时间校验)以及用户看到的时钟一致,
+# 所以统一显式用 UTC+8,不依赖系统时区。
+_BEIJING = timezone(timedelta(hours=8))
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS categories (
@@ -106,7 +110,7 @@ DEFAULT_SETTINGS = {
 
 
 def now_str():
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now(_BEIJING).strftime("%Y-%m-%d %H:%M:%S")
 
 
 class Store:
@@ -749,7 +753,7 @@ class Store:
         except (TypeError, ValueError):
             window_minutes = 30
         window_minutes = max(1, min(window_minutes, 1440))
-        cutoff = (datetime.now() - timedelta(minutes=window_minutes)).strftime("%Y-%m-%d %H:%M:%S")
+        cutoff = (datetime.now(_BEIJING) - timedelta(minutes=window_minutes)).strftime("%Y-%m-%d %H:%M:%S")
         with self._conn() as conn:
             return [dict(r) for r in conn.execute(
                 "SELECT * FROM orders WHERE pay_type=? AND status='unpaid'"
@@ -760,7 +764,7 @@ class Store:
 
     def stats(self):
         with self._conn() as conn:
-            today = time.strftime("%Y-%m-%d")
+            today = datetime.now(_BEIJING).strftime("%Y-%m-%d")
             paid = conn.execute(
                 "SELECT COUNT(*), COALESCE(SUM(total_cents),0) FROM orders"
                 " WHERE status IN ('paid','paid_unfulfilled','paid_manual') AND substr(paid_at,1,10)=?",
