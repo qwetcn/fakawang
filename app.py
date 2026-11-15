@@ -203,7 +203,7 @@ def notify_ready(cfg):
 
 def _manual_order_email(order):
     items = order.get("items") or []
-    total = fmt_cents(payable_cents(order))
+    total = fmt_cents(due_cents(order))
     lines = [f"订单号:{order['out_trade_no']}", f"买家邮箱:{order['email']}",
              f"金额:¥ {total}", f"下单时间:{order['created_at']}", "商品:"]
     for it in items:
@@ -383,6 +383,12 @@ def payable_cents(order):
     return max(0, order["total_cents"] - (order.get("discount_cents") or 0))
 
 
+def due_cents(order):
+    """买家实际应付金额(分)= 实付 + 微信随机尾数。非微信订单尾数为 0,与实付相同。
+    微信免签的金额核对(订单号核对与金额匹配)都以它为准。"""
+    return payable_cents(order) + (order.get("amount_offset_cents") or 0)
+
+
 def build_next_url(order, cfg):
     """订单的下一步:易支付返回网关地址,当面付/免签返回站内付款页。"""
     if payable_cents(order) <= 0:
@@ -504,7 +510,7 @@ def order_page(out_trade_no):
     used_coupon = store.get_coupon(order["coupon_id"]) if order.get("coupon_id") else None
     return render_template("order.html", order=order, cards=cards,
                            refund_coupon=refund_coupon, used_coupon=used_coupon,
-                           payable=payable_cents(order))
+                           payable=payable_cents(order), due=due_cents(order))
 
 
 @app.route("/search")
@@ -732,7 +738,7 @@ def pay_wechat_page(out_trade_no):
         error = "店主尚未配置微信收款码,请联系站长"
     return render_template("pay_qr.html", order=order, channel="wechat",
                            qr_img=qr_img, qr_link=qr_link, error=error,
-                           in_wechat=False, payable=payable_cents(order))
+                           in_wechat=False, payable=due_cents(order))
 
 
 # ---------- 支付回调 ----------
@@ -825,7 +831,7 @@ def pay_wechat_notify():
         if not order or order["pay_type"] != "wechat_free":
             store.log_callback("wechat_free", key, payload, "no_order")
             return jsonify({"ok": False, "error": "订单不存在或不是微信免签订单"})
-        if payable_cents(order) != amount_cents:
+        if due_cents(order) != amount_cents:
             store.log_callback("wechat_free", key, payload, "amount_mismatch", out_no)
             return jsonify({"ok": False, "error": "金额与订单不一致"})
         fulfill_and_notify(order["id"], trade_no=str(params.get("txid", "")))
@@ -1301,6 +1307,7 @@ def admin_order_detail(oid):
     order["used_coupon"] = store.get_coupon(order["coupon_id"]) if order.get("coupon_id") else None
     order["refund_coupon"] = store.get_coupon_by_source_order(oid)
     order["payable_cents"] = payable_cents(order)
+    order["due_cents"] = due_cents(order)
     return jsonify({"ok": True, "order": order})
 
 

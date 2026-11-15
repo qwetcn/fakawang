@@ -23,7 +23,12 @@
     <tr><td colspan="2"><b>合计</b></td><td><b>¥ {{ fmt_cents(order.total_cents) }}</b></td></tr>
     {% if order.discount_cents %}
     <tr><td colspan="2">优惠券抵扣{% if used_coupon %}({{ used_coupon.code }}){% endif %}</td><td>-¥ {{ fmt_cents(order.discount_cents) }}</td></tr>
-    <tr><td colspan="2"><b>实付</b></td><td><b>¥ {{ fmt_cents(payable) }}</b></td></tr>
+    {% endif %}
+    {% if order.discount_cents or order.amount_offset_cents %}
+    <tr><td colspan="2"><b>实付</b></td><td><b>¥ {{ fmt_cents(due) }}</b></td></tr>
+    {% endif %}
+    {% if order.amount_offset_cents and order.status == 'unpaid' %}
+    <tr><td colspan="3" class="muted">实付金额含随机尾数 ¥ {{ fmt_cents(order.amount_offset_cents) }},用于区分相同金额的订单,请按实付金额准确付款。</td></tr>
     {% endif %}
   </table>
   {% if order.status == 'unpaid' %}

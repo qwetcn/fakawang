@@ -25,6 +25,7 @@
   {% endif %}
   {% else %}
   <p class="muted">请用微信扫码,并支付与订单完全一致的金额;付款后监听软件确认到账即自动发货,页面会自动跳转。</p>
+  {% if order.amount_offset_cents %}<p class="warn">金额含随机尾数 ¥ {{ fmt_cents(order.amount_offset_cents) }},用于区分相同金额的订单,请按上方显示的金额准确付款,不要四舍五入。</p>{% endif %}
   {% endif %}
   <div class="btn-row center-row">
     {% if channel == 'alipay' and qr_link and not in_wechat %}

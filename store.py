@@ -127,6 +127,8 @@ class Store:
                 conn.execute("ALTER TABLE orders ADD COLUMN discount_cents INTEGER NOT NULL DEFAULT 0")
             if "cancel_reason" not in ocols:
                 conn.execute("ALTER TABLE orders ADD COLUMN cancel_reason TEXT NOT NULL DEFAULT ''")
+            if "amount_offset_cents" not in ocols:
+                conn.execute("ALTER TABLE orders ADD COLUMN amount_offset_cents INTEGER NOT NULL DEFAULT 0")
             ccols = [r[1] for r in conn.execute("PRAGMA table_info(cards)").fetchall()]
             if "source" not in ccols:
                 conn.execute("ALTER TABLE cards ADD COLUMN source TEXT NOT NULL DEFAULT 'stock'")
@@ -428,15 +430,28 @@ class Store:
                         raise ValueError("优惠券金额异常")
                     coupon_id = crow["id"]
                     discount = min(crow["amount_cents"], total)
+                # 微信免签:加 1~9 分随机尾数,让同金额订单的应付金额不同,
+                # 金额匹配时能唯一区分。同一事务内选尾数,防并发撞号;
+                # 9 个尾数都被占时随机挑一个(极少见,撞上则走人工确认)。
+                offset = 0
+                if pay_type == "wechat_free" and total - discount > 0:
+                    payable = total - discount
+                    used = {r[0] + r[1] for r in conn.execute(
+                        "SELECT total_cents - COALESCE(discount_cents,0),"
+                        " COALESCE(amount_offset_cents,0) FROM orders"
+                        " WHERE pay_type='wechat_free' AND status='unpaid'").fetchall()}
+                    free = [o for o in range(1, 10) if payable + o not in used]
+                    offset = secrets.choice(free) if free else secrets.randbelow(9) + 1
                 for _ in range(5):
                     no = self.generate_out_trade_no()
                     try:
                         cur = conn.execute(
                             "INSERT INTO orders(out_trade_no, email, total_cents, pay_type,"
-                            " status, client_ip, created_at, coupon_id, discount_cents)"
-                            " VALUES (?, ?, ?, ?, 'unpaid', ?, ?, ?, ?)",
+                            " status, client_ip, created_at, coupon_id, discount_cents,"
+                            " amount_offset_cents)"
+                            " VALUES (?, ?, ?, ?, 'unpaid', ?, ?, ?, ?, ?)",
                             (no, email, total, pay_type, client_ip, now_str(),
-                             coupon_id, discount))
+                             coupon_id, discount, offset))
                         break
                     except sqlite3.IntegrityError:
                         continue
@@ -626,7 +641,8 @@ class Store:
                         " WHERE id=? AND status='locked' AND locked_order_id=?",
                         (order["coupon_id"], order_id))
                 if prev_status in ("paid", "paid_unfulfilled", "paid_manual"):
-                    paid_cents = order["total_cents"] - (order["discount_cents"] or 0)
+                    paid_cents = (order["total_cents"] - (order["discount_cents"] or 0)
+                                  + (order["amount_offset_cents"] or 0))
                     if paid_cents > 0:
                         existing = conn.execute(
                             "SELECT id FROM coupons WHERE source_order_id=? LIMIT 1",
@@ -731,7 +747,8 @@ class Store:
         with self._conn() as conn:
             return [dict(r) for r in conn.execute(
                 "SELECT * FROM orders WHERE pay_type=? AND status='unpaid'"
-                " AND total_cents - COALESCE(discount_cents, 0) = ? AND created_at >= ?"
+                " AND total_cents - COALESCE(discount_cents, 0)"
+                " + COALESCE(amount_offset_cents, 0) = ? AND created_at >= ?"
                 " ORDER BY id DESC",
                 (pay_type, total_cents, cutoff)).fetchall()]
 
