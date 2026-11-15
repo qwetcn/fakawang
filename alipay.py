@@ -14,12 +14,21 @@ import re
 import time
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta, timezone
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 
 DEFAULT_GATEWAY = "https://openapi.alipay.com/gateway.do"
+
+# 支付宝网关按北京时间(UTC+8)校验 timestamp,偏差过大会直接回 isv.invalid-signature
+# (而不是时间戳错误)。容器默认 UTC,这里显式换算,不依赖系统时区。
+_BEIJING = timezone(timedelta(hours=8))
+
+
+def _beijing_now():
+    return datetime.now(_BEIJING).strftime("%Y-%m-%d %H:%M:%S")
 
 
 class AlipayError(Exception):
@@ -50,23 +59,33 @@ def _normalize_pem(pem_text, default_header):
 
 
 def load_private_key(pem_text):
+    pem = _normalize_pem(pem_text, "PRIVATE KEY")
     try:
-        pem = _normalize_pem(pem_text, "PRIVATE KEY")
         return serialization.load_pem_private_key(pem.encode(), password=None)
     except ValueError:
-        raise
-    except Exception as e:
-        raise ValueError(f"应用私钥无法解析: {e}")
+        # 标签与内容不匹配时会走到这里:常见于 PKCS8 内容被标成
+        # "RSA PRIVATE KEY"(cryptography 50+ 严格按标签解析,openssl 则宽松)。
+        # 退化为 DER 解析,由结构自己决定是 PKCS1 还是 PKCS8。
+        try:
+            body = re.sub(r"-----BEGIN [^-]+-----|-----END [^-]+-----", "", pem_text)
+            body = re.sub(r"\s+", "", body)
+            return serialization.load_der_private_key(base64.b64decode(body), password=None)
+        except Exception as e:
+            raise ValueError(f"应用私钥无法解析: {e}")
 
 
 def load_public_key(pem_text):
+    pem = _normalize_pem(pem_text, "PUBLIC KEY")
     try:
-        pem = _normalize_pem(pem_text, "PUBLIC KEY")
         return serialization.load_pem_public_key(pem.encode())
     except ValueError:
-        raise
-    except Exception as e:
-        raise ValueError(f"支付宝公钥无法解析: {e}")
+        # 同上:PKCS1(RSAPublicKey) 内容被标成 "PUBLIC KEY"(SPKI) 时退化解析
+        try:
+            body = re.sub(r"-----BEGIN [^-]+-----|-----END [^-]+-----", "", pem_text)
+            body = re.sub(r"\s+", "", body)
+            return serialization.load_der_public_key(base64.b64decode(body))
+        except Exception as e:
+            raise ValueError(f"支付宝公钥无法解析: {e}")
 
 
 def sign_content(content, private_key):
@@ -83,15 +102,18 @@ def verify_content(content, signature_b64, public_key):
         return False
 
 
-def build_sign_content(params):
+def build_sign_content(params, drop_sign_type=True):
+    # 请求签名:sign_type 必须参与(支付宝网关按「除 sign 外全部非空参数」验签);
+    # 异步通知验签:官方规则排除 sign 和 sign_type 两者。两种场景分开处理。
+    skip = ("sign", "sign_type") if drop_sign_type else ("sign",)
     items = [(str(k), str(v)) for k, v in params.items()
-             if k not in ("sign", "sign_type") and v is not None and str(v) != ""]
+             if k not in skip and v is not None and str(v) != ""]
     items.sort(key=lambda kv: kv[0])
     return "&".join(f"{k}={v}" for k, v in items)
 
 
 def sign_params(params, private_pem):
-    return sign_content(build_sign_content(params), load_private_key(private_pem))
+    return sign_content(build_sign_content(params, drop_sign_type=False), load_private_key(private_pem))
 
 
 def verify_params(params, public_pem):
@@ -167,13 +189,18 @@ def _open(req, timeout):
 
 def _call(cfg, method, biz_content, timeout=20):
     gateway = (cfg.get("gateway") or DEFAULT_GATEWAY).rstrip("/")
+    # charset 必须放在 URL 查询串里:支付宝网关靠它推断 body 的字符集。
+    # 只放 body 里时,含中文的 biz_content 会随机报 isv.invalid-signature
+    # (实测 1/3/5/7 个汉字必失败、2/4/6 个汉字通过,纯 ASCII 永远正常)。
+    if "charset=" not in gateway:
+        gateway += "?charset=utf-8"
     params = {
         "app_id": cfg["appid"],
         "method": method,
         "format": "JSON",
         "charset": "utf-8",
         "sign_type": "RSA2",
-        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "timestamp": _beijing_now(),
         "version": "1.0",
         "biz_content": json.dumps(biz_content, ensure_ascii=False, separators=(",", ":")),
     }
@@ -183,7 +210,7 @@ def _call(cfg, method, biz_content, timeout=20):
         params["sign"] = sign_params(params, cfg["private_key"])
     except ValueError as e:
         raise AlipayError(f"支付宝签名失败:{e}")
-    body = urllib.parse.urlencode(params).encode("utf-8")
+    body = urllib.parse.urlencode(params, quote_via=urllib.parse.quote).encode("utf-8")
     req = urllib.request.Request(gateway, data=body,
                                  headers={"Content-Type": "application/x-www-form-urlencoded"})
     try:
