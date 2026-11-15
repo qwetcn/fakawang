@@ -8,6 +8,7 @@
 部署:见 README.md。
 """
 import base64
+import hashlib
 import hmac
 import io
 import json
@@ -27,7 +28,7 @@ import alipay
 import epay
 import mailer
 import wfree
-from store import Store, seed_demo
+from store import Store, now_str, seed_demo
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -225,6 +226,30 @@ def _manual_order_email(order):
             f"<tr><th>商品</th><th>数量</th></tr>{rows}</table>"
             f"<p><a href='{_esc(admin_url)}'>登录后台处理</a></p>")
     return f"【手动发货】新订单 {order['out_trade_no']} ¥ {total}", text, html
+
+
+def _confirm_email(order, link):
+    """微信免签手动确认收款邮件:买家称已付款,请站长点链接确认是否已收款。"""
+    total = fmt_cents(due_cents(order))
+    items = order.get("items") or []
+    lines = ["买家称已用微信付款,请核对微信收款记录后确认是否已收款。",
+             f"订单号:{order['out_trade_no']}", f"买家邮箱:{order['email']}",
+             f"应付金额:¥ {total}(含随机尾数,请按准确金额核对)",
+             f"下单时间:{order['created_at']}", "商品:"]
+    for it in items:
+        lines.append(f"  - {it['product_name']} x {it['qty']}")
+    lines += ["", f"确认请打开:{link}", "链接 24 小时内有效,只能使用一次。"]
+    text = "\n".join(lines)
+    rows = "".join(f"<tr><td>{_esc(it['product_name'])}</td><td>{it['qty']}</td></tr>" for it in items)
+    html = (f"<p>买家称已用微信付款,请核对微信收款记录后确认是否已收款。</p>"
+            f"<p>订单号:<b>{_esc(order['out_trade_no'])}</b><br>买家邮箱:{_esc(order['email'])}"
+            f"<br>应付金额:¥ <b>{total}</b>(含随机尾数,请按准确金额核对)"
+            f"<br>下单时间:{_esc(order['created_at'])}</p>"
+            f"<table border='1' cellpadding='6' cellspacing='0'>"
+            f"<tr><th>商品</th><th>数量</th></tr>{rows}</table>"
+            f"<p><a href='{_esc(link)}'>点此确认是否已收款</a></p>"
+            f"<p>链接 24 小时内有效,只能使用一次。</p>")
+    return f"【待确认收款】{order['out_trade_no']} ¥ {total}", text, html
 
 
 def _send_notify_in_background(cfg, order_id, subject, text, html):
@@ -649,6 +674,10 @@ def api_order_status(out_trade_no):
            "discount_cents": order.get("discount_cents") or 0,
            "payable_cents": payable_cents(order),
            "paid_at": order["paid_at"], "note": order["note"]}
+    if order["status"] == "unpaid" and order["pay_type"] == "wechat_free":
+        cs = store.confirm_status(order["id"])
+        if cs:
+            out["confirm_status"] = cs
     if order["status"] in ("paid", "paid_unfulfilled", "paid_manual"):
         out["cards"] = store.get_order_cards(order["id"])
     return jsonify(out)
@@ -750,7 +779,8 @@ def pay_alipay_page(out_trade_no):
     in_wechat = "MicroMessenger" in request.headers.get("User-Agent", "")
     return render_template("pay_qr.html", order=order, channel="alipay",
                            qr_img=qr_img, qr_link=qr_link, error=error,
-                           in_wechat=in_wechat, payable=payable_cents(order))
+                           in_wechat=in_wechat, payable=payable_cents(order),
+                           all_auto=False)
 
 
 @app.route("/pay/wechat/<out_trade_no>")
@@ -774,7 +804,86 @@ def pay_wechat_page(out_trade_no):
         error = "店主尚未配置微信收款码,请联系站长"
     return render_template("pay_qr.html", order=order, channel="wechat",
                            qr_img=qr_img, qr_link=qr_link, error=error,
-                           in_wechat=False, payable=due_cents(order))
+                           in_wechat=False, payable=due_cents(order),
+                           all_auto=store.is_all_auto_order(order["id"]))
+
+
+# ---------- 微信免签手动确认收款 ----------
+@app.route("/api/order/<out_trade_no>/request-confirm", methods=["POST"])
+def api_request_confirm(out_trade_no):
+    """买家点「我已支付」:给站长邮箱发一条授权确认链接(仅微信免签 + 全自动发货订单)。"""
+    if not allow(f"confirmreq:{request.remote_addr or ''}", 20):
+        return jsonify({"ok": False, "error": "操作太频繁,请稍后再试"}), 429
+    order = store.get_order_by_no(out_trade_no)
+    if not order:
+        return jsonify({"ok": False, "error": "订单不存在"}), 404
+    if order["status"] != "unpaid":
+        return jsonify({"ok": False, "error": "订单已不是待支付状态"}), 400
+    if order["pay_type"] != "wechat_free":
+        return jsonify({"ok": False, "error": "仅微信免签订单可用商家确认"}), 400
+    if not store.is_all_auto_order(order["id"]):
+        return jsonify({"ok": False, "error": "仅自动发货商品可用商家确认"}), 400
+    cfg = notify_cfg()
+    if not notify_ready(cfg):
+        return jsonify({"ok": False, "error": "商家未配置邮件通知,请联系客服处理"}), 503
+    if store.confirm_cooldown_remaining(order["id"]) > 0:
+        return jsonify({"ok": False, "error": "确认请求已发送,请等待商家确认"}), 429
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    tid = store.create_confirm_token(order["id"], token_hash)
+    link = base_url() + "/pay/confirm/" + token
+    subject, text, html = _confirm_email(order, link)
+    try:
+        ok, err = mailer.send_mail(cfg["smtp_host"], int(cfg["smtp_port"]), cfg["smtp_security"],
+                                   cfg["smtp_user"], cfg["smtp_pass"],
+                                   cfg["smtp_from"] or cfg["smtp_user"],
+                                   cfg["notify_email"], subject, text, html)
+    except Exception as e:
+        ok, err = False, str(e)
+    if not ok:
+        store.decide_confirm_token(tid, "superseded")
+        app.logger.warning("confirm email failed: %s", err)
+        return jsonify({"ok": False, "error": "邮件发送失败,请联系客服处理"}), 502
+    return jsonify({"ok": True})
+
+
+@app.route("/pay/confirm/<token>", methods=["GET", "POST"])
+def pay_confirm_page(token):
+    """站长点邮件里的授权链接,确认是否已收款。GET 只展示,POST 才裁决(防邮件预取误触)。"""
+    if not allow(f"confirm:{request.remote_addr or ''}", 30):
+        abort(429)
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    tok = store.get_confirm_token(token_hash)
+    order = store.get_order(tok["order_id"]) if tok else None
+    if not tok or not order:
+        return render_template("pay_confirm.html", state="invalid"), 404
+    due = due_cents(order)
+    if tok["decision"] == "confirmed":
+        return render_template("pay_confirm.html", state="done", order=order, due=due,
+                               decision="confirmed")
+    if tok["decision"] == "denied":
+        return render_template("pay_confirm.html", state="done", order=order, due=due,
+                               decision="denied")
+    if tok["decision"] == "superseded":
+        return render_template("pay_confirm.html", state="superseded", order=order, due=due)
+    if tok["expires_at"] <= now_str():
+        return render_template("pay_confirm.html", state="expired", order=order, due=due)
+    if order["status"] != "unpaid":
+        return render_template("pay_confirm.html", state="paid", order=order, due=due)
+    if request.method == "POST":
+        decision = request.form.get("decision", "")
+        if decision not in ("confirmed", "denied"):
+            abort(400)
+        if not store.decide_confirm_token(tok["id"], decision):
+            return redirect(request.path)
+        if decision == "confirmed":
+            fresh = store.get_order_by_no(order["out_trade_no"])
+            if fresh and fresh["status"] == "unpaid":
+                fulfill_and_notify(fresh["id"], trade_no="MANUAL-CONFIRM")
+        return render_template("pay_confirm.html", state="done",
+                               order=store.get_order(tok["order_id"]), due=due_cents(order),
+                               decision=decision)
+    return render_template("pay_confirm.html", state="ask", order=order, due=due, token=token)
 
 
 # ---------- 支付回调 ----------

@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}确认收款 - {{ settings.site_name }}{% endblock %}
+{% block body %}
+<div class="panel center">
+  <h2>确认收款</h2>
+  {% if state == 'invalid' %}
+  <p class="error">链接无效。</p>
+  {% elif state == 'expired' %}
+  <p class="error">该确认链接已过期（24 小时有效）。请在后台查看订单状态。</p>
+  {% elif state == 'superseded' %}
+  <p class="muted">买家发起了新的确认请求，该链接已失效，请打开最新邮件中的链接。</p>
+  {% elif state == 'paid' %}
+  <p>该订单已处理，无需确认。</p>
+  {% elif state == 'done' %}
+  {% if decision == 'confirmed' %}
+  <p>已确认为已收款，订单已自动发货。</p>
+  {% else %}
+  <p>已标记为未收到款，订单保持待支付状态。</p>
+  {% endif %}
+  {% elif state == 'ask' %}
+  <p>买家称已用微信付款，请核对微信收款记录后确认：</p>
+  {% endif %}
+  {% if order is defined %}
+  <p>订单号：<b>{{ order.out_trade_no }}</b><br>
+  买家邮箱：{{ order.email }}<br>
+  应付金额：<b class="price-big">¥ {{ fmt_cents(due) }}</b><br>
+  下单时间：{{ order.created_at }}</p>
+  {% if order.amount_offset_cents %}<p class="warn">金额含随机尾数 ¥ {{ fmt_cents(order.amount_offset_cents) }}，请按准确金额核对。</p>{% endif %}
+  <p>{% for it in order['items'] %}{{ it.product_name }} × {{ it.qty }}{% if not loop.last %}；{% endif %}{% endfor %}</p>
+  {% endif %}
+  {% if state == 'ask' %}
+  <form method="post">
+    <div class="btn-row center-row">
+      <button class="btn primary" type="submit" name="decision" value="confirmed">已收款，立即发货</button>
+      <button class="btn danger" type="submit" name="decision" value="denied">未收到款</button>
+    </div>
+  </form>
+  <p class="muted">链接 24 小时内有效，只能使用一次。</p>
+  {% endif %}
+  <p><a class="btn" href="/admin">去后台</a></p>
+</div>
+{% endblock %}

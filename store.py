@@ -99,6 +99,16 @@ CREATE TABLE IF NOT EXISTS payment_callbacks (
     matched_order TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS confirm_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id INTEGER NOT NULL REFERENCES orders(id),
+    token_hash TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+    decision TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_confirm_tokens_order ON confirm_tokens(order_id);
 """
 
 DEFAULT_SETTINGS = {
@@ -746,6 +756,75 @@ class Store:
                 "SELECT matched_order FROM payment_callbacks"
                 " WHERE dedup_key=? AND result='matched'", (dedup_key,)).fetchone()
             return row["matched_order"] if row else None
+
+    # ---------- 微信免签手动确认收款 ----------
+    CONFIRM_TOKEN_TTL_HOURS = 24
+    CONFIRM_COOLDOWN_SECONDS = 300
+
+    def is_all_auto_order(self, order_id):
+        """订单是否全部为自动发货商品(手动确认收款只对这类订单开放)。"""
+        with self._conn() as conn:
+            n = conn.execute(
+                "SELECT COUNT(*) FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id"
+                " WHERE oi.order_id=? AND COALESCE(p.fulfill_mode, 'auto') != 'auto'",
+                (order_id,)).fetchone()[0]
+            return n == 0
+
+    def create_confirm_token(self, order_id, token_hash):
+        """创建确认令牌,同时作废该订单之前未决的令牌。返回新令牌 id。"""
+        now = datetime.now(_BEIJING)
+        created = now.strftime("%Y-%m-%d %H:%M:%S")
+        expires = (now + timedelta(hours=self.CONFIRM_TOKEN_TTL_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
+        with WRITE_LOCK, self._conn() as conn:
+            conn.execute("UPDATE confirm_tokens SET decision='superseded', used_at=?"
+                         " WHERE order_id=? AND decision=''", (created, order_id))
+            cur = conn.execute(
+                "INSERT INTO confirm_tokens(order_id, token_hash, created_at, expires_at)"
+                " VALUES (?, ?, ?, ?)", (order_id, token_hash, created, expires))
+            return cur.lastrowid
+
+    def get_confirm_token(self, token_hash):
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM confirm_tokens WHERE token_hash=?",
+                               (token_hash,)).fetchone()
+            return dict(row) if row else None
+
+    def decide_confirm_token(self, token_id, decision):
+        """原子裁决:只有未决的令牌能被裁决,成功返回 True(防重复提交/并发)。"""
+        with WRITE_LOCK, self._conn() as conn:
+            cur = conn.execute("UPDATE confirm_tokens SET decision=?, used_at=?"
+                               " WHERE id=? AND decision=''",
+                               (decision, now_str(), token_id))
+            return cur.rowcount == 1
+
+    def latest_confirm_token(self, order_id):
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM confirm_tokens WHERE order_id=?"
+                               " ORDER BY id DESC LIMIT 1", (order_id,)).fetchone()
+            return dict(row) if row else None
+
+    def confirm_cooldown_remaining(self, order_id):
+        """未决请求 5 分钟内不重复发邮件;返回剩余秒数(0 表示可发)。"""
+        tok = self.latest_confirm_token(order_id)
+        if not tok or tok["decision"] != "" or tok["expires_at"] <= now_str():
+            return 0
+        try:
+            created = datetime.strptime(tok["created_at"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=_BEIJING)
+        except ValueError:
+            return 0
+        left = self.CONFIRM_COOLDOWN_SECONDS - (datetime.now(_BEIJING) - created).total_seconds()
+        return max(0, int(left))
+
+    def confirm_status(self, order_id):
+        """订单最新确认请求状态:'pending'|'denied'|None(无请求/已过期/已作废/已确认)。"""
+        tok = self.latest_confirm_token(order_id)
+        if not tok:
+            return None
+        if tok["decision"] == "denied":
+            return "denied"
+        if tok["decision"] == "" and tok["expires_at"] > now_str():
+            return "pending"
+        return None
 
     def callback_seen(self, dedup_key):
         with self._conn() as conn:
