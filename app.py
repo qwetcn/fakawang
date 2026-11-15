@@ -566,7 +566,8 @@ def api_products():
         {"id": p["id"], "category_id": p["category_id"], "name": p["name"],
          "price_cents": p["price_cents"], "image_url": p["image_url"],
          "stock": p["stock"], "recommend": p["recommend"], "min_qty": p["min_qty"],
-         "max_qty": p["max_qty"]}
+         "max_qty": p["max_qty"], "fulfill_mode": p["fulfill_mode"],
+         "manual_stock": p["manual_stock"]}
         for p in store.list_products()]})
 
 
@@ -1233,10 +1234,13 @@ def _product_fields(data, partial=False):
     for k in ("image_url", "description"):
         if k in data or not partial:
             fields[k] = str(data.get(k, ""))
-    defaults = {"sort": 0, "recommend": 0, "enabled": 1, "min_qty": 1, "max_qty": 100}
-    for k in ("sort", "recommend", "enabled", "min_qty", "max_qty"):
+    defaults = {"sort": 0, "recommend": 0, "enabled": 1, "min_qty": 1, "max_qty": 100,
+                "manual_stock": 1}
+    for k in ("sort", "recommend", "enabled", "min_qty", "max_qty", "manual_stock"):
         if k in data or not partial:
             fields[k] = int(data.get(k, defaults[k]))
+    if "manual_stock" in fields:
+        fields["manual_stock"] = 1 if fields["manual_stock"] else 0
     if "fulfill_mode" in data or not partial:
         mode = str(data.get("fulfill_mode", "auto")).strip()
         if mode not in ("auto", "manual"):

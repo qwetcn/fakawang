@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS products (
     min_qty INTEGER NOT NULL DEFAULT 1,
     max_qty INTEGER NOT NULL DEFAULT 100,
     fulfill_mode TEXT NOT NULL DEFAULT 'auto',
+    manual_stock INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS cards (
@@ -122,6 +123,8 @@ class Store:
             cols = [r[1] for r in conn.execute("PRAGMA table_info(products)").fetchall()]
             if "fulfill_mode" not in cols:
                 conn.execute("ALTER TABLE products ADD COLUMN fulfill_mode TEXT NOT NULL DEFAULT 'auto'")
+            if "manual_stock" not in cols:
+                conn.execute("ALTER TABLE products ADD COLUMN manual_stock INTEGER NOT NULL DEFAULT 1")
             ocols = [r[1] for r in conn.execute("PRAGMA table_info(orders)").fetchall()]
             if "notified_at" not in ocols:
                 conn.execute("ALTER TABLE orders ADD COLUMN notified_at TEXT")
@@ -199,23 +202,25 @@ class Store:
             return dict(row) if row else None
 
     def add_product(self, category_id, name, price_cents, image_url="", description="",
-                    sort=0, recommend=0, enabled=1, min_qty=1, max_qty=100, fulfill_mode="auto"):
+                    sort=0, recommend=0, enabled=1, min_qty=1, max_qty=100, fulfill_mode="auto",
+                    manual_stock=1):
         if fulfill_mode not in ("auto", "manual"):
             raise ValueError("发货方式只能是 auto 或 manual")
         with WRITE_LOCK, self._conn() as conn:
             cur = conn.execute(
                 "INSERT INTO products(category_id, name, price_cents, image_url, description,"
-                " sort, recommend, enabled, min_qty, max_qty, fulfill_mode, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " sort, recommend, enabled, min_qty, max_qty, fulfill_mode, manual_stock, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (category_id, name, price_cents, image_url, description,
-                 sort, recommend, enabled, min_qty, max_qty, fulfill_mode, now_str()))
+                 sort, recommend, enabled, min_qty, max_qty, fulfill_mode, manual_stock, now_str()))
             return cur.lastrowid
 
     def update_product(self, pid, **fields):
         if "fulfill_mode" in fields and fields["fulfill_mode"] not in ("auto", "manual"):
             raise ValueError("发货方式只能是 auto 或 manual")
         allowed = {"category_id", "name", "price_cents", "image_url", "description",
-                   "sort", "recommend", "enabled", "min_qty", "max_qty", "fulfill_mode"}
+                   "sort", "recommend", "enabled", "min_qty", "max_qty", "fulfill_mode",
+                   "manual_stock"}
         sets, vals = [], []
         for k, v in fields.items():
             if k in allowed:
@@ -410,7 +415,10 @@ class Store:
                     qty = int(it["qty"])
                     if qty < p["min_qty"] or qty > p["max_qty"]:
                         raise ValueError(f"{p['name']} 购买数量需在 {p['min_qty']}~{p['max_qty']} 之间")
-                    if p["fulfill_mode"] != "manual":
+                    if p["fulfill_mode"] == "manual":
+                        if not p["manual_stock"]:
+                            raise ValueError(f"{p['name']} 暂时无货")
+                    else:
                         stock = conn.execute(
                             "SELECT COUNT(*) FROM cards WHERE product_id=? AND status='unused'",
                             (p["id"],)).fetchone()[0]

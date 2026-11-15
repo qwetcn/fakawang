@@ -61,6 +61,7 @@
 <label>最多购买 <input id="prodMax" type="number" value="100"></label>
 <label><input type="checkbox" id="prodRec"> 推荐</label>
 <label><input type="checkbox" id="prodEnabled" checked> 上架</label>
+<label><input type="checkbox" id="prodManualStock" checked> 有货(手动发货)</label>
 <label>发货方式 <select id="prodMode"><option value="auto">自动发货</option><option value="manual">手动发货</option></select></label>
 </div>
 <label>商品详情(纯文本,换行显示)</label>
@@ -268,7 +269,7 @@ return api('/admin/api/products');
 PRODUCTS = res.d.products;
 var catName = {}; CATS.forEach(function(c){ catName[c.id] = c.name;});
 document.getElementById('prodTable').innerHTML = '<tr><th>ID</th><th>商品</th><th>分类</th><th>价格</th><th>库存</th><th>发货</th><th>状态</th><th>操作</th></tr>' + PRODUCTS.map(function(p){
-return '<tr><td>' + p.id + '</td><td>' + esc(p.name) + (p.recommend? ' <span class="tag">推荐</span>': '') + '</td><td>' + esc(catName[p.category_id] || '') + '</td><td>' + money(p.price_cents) + '</td><td>' + p.stock + '</td><td>' + (p.fulfill_mode === 'manual'? '手动': '自动') + '</td><td>' + (p.enabled? '上架': '下架') + '</td><td><button class="btn small" onclick="editProd(' + p.id + ')">编辑</button> <button class="btn small" onclick="gotoCards(' + p.id + ')">卡密</button> <button class="btn small danger" onclick="delProd(' + p.id + ')">删除</button></td></tr>';
+return '<tr><td>' + p.id + '</td><td>' + esc(p.name) + (p.recommend? ' <span class="tag">推荐</span>': '') + '</td><td>' + esc(catName[p.category_id] || '') + '</td><td>' + money(p.price_cents) + '</td><td>' + (p.fulfill_mode === 'manual'? (p.manual_stock !== 0? '有货': '无货'): p.stock) + '</td><td>' + (p.fulfill_mode === 'manual'? '手动': '自动') + '</td><td>' + (p.enabled? '上架': '下架') + '</td><td><button class="btn small" onclick="editProd(' + p.id + ')">编辑</button> <button class="btn small" onclick="gotoCards(' + p.id + ')">卡密</button> <button class="btn small danger" onclick="delProd(' + p.id + ')">删除</button></td></tr>';
 }).join('');
 });
 }
@@ -302,7 +303,7 @@ document.getElementById('prodId').value = '';
 document.getElementById('prodFormTitle').textContent = '添加商品';
 ['prodName','prodPrice','prodImg','prodDesc'].forEach(function(id){ document.getElementById(id).value = '';});
 document.getElementById('prodSort').value = 0; document.getElementById('prodMin').value = 1; document.getElementById('prodMax').value = 100;
-document.getElementById('prodRec').checked = false; document.getElementById('prodEnabled').checked = true; document.getElementById('prodMode').value = 'auto';
+document.getElementById('prodRec').checked = false; document.getElementById('prodEnabled').checked = true; document.getElementById('prodMode').value = 'auto'; document.getElementById('prodManualStock').checked = true;
 refreshProdImgPreview();
 }
 document.getElementById('btnResetProd').onclick = resetProdForm;
@@ -322,6 +323,7 @@ document.getElementById('prodMax').value = p.max_qty;
 document.getElementById('prodRec').checked =!!p.recommend;
 document.getElementById('prodEnabled').checked =!!p.enabled;
 document.getElementById('prodMode').value = p.fulfill_mode || 'auto';
+document.getElementById('prodManualStock').checked = p.manual_stock !== 0;
 refreshProdImgPreview();
 window.scrollTo({top: 0, behavior: 'smooth'});
 }
@@ -330,7 +332,7 @@ var body = {category_id: +document.getElementById('prodCat').value, name: docume
 price: document.getElementById('prodPrice').value.trim(), image_url: document.getElementById('prodImg').value.trim(),
 description: document.getElementById('prodDesc').value, sort: +document.getElementById('prodSort').value || 0,
 min_qty: +document.getElementById('prodMin').value || 1, max_qty: +document.getElementById('prodMax').value || 100,
-recommend: document.getElementById('prodRec').checked? 1: 0, enabled: document.getElementById('prodEnabled').checked? 1: 0, fulfill_mode: document.getElementById('prodMode').value};
+recommend: document.getElementById('prodRec').checked? 1: 0, enabled: document.getElementById('prodEnabled').checked? 1: 0, fulfill_mode: document.getElementById('prodMode').value, manual_stock: document.getElementById('prodManualStock').checked? 1: 0};
 var id = document.getElementById('prodId').value;
 var p = id? api('/admin/api/products/' + id, 'PUT', body): api('/admin/api/products', 'POST', body);
 p.then(function(res){ if (res.d.ok) { resetProdForm(); loadProducts();} else alert(res.d.error);});

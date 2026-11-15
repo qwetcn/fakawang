@@ -25,7 +25,7 @@
         <div class="card-name">{{ p.name }}</div>
         <div class="card-meta">
           {% if p.fulfill_mode == 'manual' %}
-          {% if p.stock > 0 %}<span class="stock">库存 {{ p.stock }}</span> {% endif %}<span class="mode">手动发货</span>
+          {% if p.manual_stock %}<span class="stock">有货</span>{% else %}<span class="stock out">缺货</span>{% endif %} <span class="mode">手动发货</span>
           {% elif p.stock > 0 %}
           <span class="stock">库存 {{ p.stock }}</span> <span class="mode">自动发货</span>
           {% else %}

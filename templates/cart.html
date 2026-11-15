@@ -67,11 +67,15 @@ function render(){
     if (!p) { html += '<div class="cart-item"><span>商品已下架</span><button data-i="'+i+'" class="rm">删除</button></div>'; valid = false; return; }
     var sub = p.price_cents * it.qty;
     total += sub;
-    var lack = p.fulfill_mode !== 'manual' && it.qty > p.stock;
+    var manual = p.fulfill_mode === 'manual';
+    var lack = manual ? !p.manual_stock : it.qty > p.stock;
     if (lack) valid = false;
+    var stockHtml = manual
+      ? (p.manual_stock ? ' <span class="stock">有货</span>' : ' <span class="stock out">缺货</span>')
+      : (lack ? ' <span class="stock out">库存不足,仅剩 ' + p.stock + '</span>' : ' <span class="stock">库存 ' + p.stock + '</span>');
     html += '<div class="cart-item"><div><b>' + esc(p.name) + '</b><br><span class="muted">¥ ' + (p.price_cents/100).toFixed(2) + ' × </span>'
       + '<input type="number" class="qty-in" data-i="'+i+'" value="'+it.qty+'" min="1" max="'+p.max_qty+'">'
-      + (lack ? ' <span class="stock out">库存不足,仅剩 ' + p.stock + '</span>' : ' <span class="stock">库存 ' + p.stock + '</span>')
+      + stockHtml
       + '</div><div><b>¥ ' + (sub/100).toFixed(2) + '</b> <button data-i="'+i+'" class="rm">删除</button></div></div>';
   });
   box.innerHTML = html;
