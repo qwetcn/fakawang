@@ -2,7 +2,7 @@
 {% block title %}确认收款 - {{ settings.site_name }}{% endblock %}
 {% block body %}
 <div class="panel center">
-  <h2>确认收款</h2>
+  <h2>{% if state == 'ship' %}直接发货{% else %}确认收款{% endif %}</h2>
   {% if state == 'invalid' %}
   <p class="error">链接无效。</p>
   {% elif state == 'expired' %}
@@ -14,25 +14,41 @@
   {% elif state == 'done' %}
   {% if decision == 'confirmed' %}
   <p>已确认为已收款，订单已自动发货。</p>
+  {% elif decision == 'shipped' %}
+  <p>发货成功。</p>
   {% else %}
   <p>已标记为未收到款，订单保持待支付状态。</p>
   {% endif %}
+  {% if order.status == 'paid_unfulfilled' %}<p class="warn">部分商品缺货：{{ order.note }}，请补库存后在后台点手动发货补发。</p>{% endif %}
   {% elif state == 'ask' %}
   <p>买家称已用微信付款，请核对微信收款记录后确认：</p>
+  {% elif state == 'ship' %}
+  <p>该订单已付款，含手动发货商品，请填写发货内容后点发货：</p>
   {% endif %}
   {% if order is defined %}
   <p>订单号：<b>{{ order.out_trade_no }}</b><br>
   买家邮箱：{{ order.email }}<br>
   应付金额：<b class="price-big">¥ {{ fmt_cents(due) }}</b><br>
   下单时间：{{ order.created_at }}</p>
-  {% if order.amount_offset_cents %}<p class="warn">金额含随机尾数 ¥ {{ fmt_cents(order.amount_offset_cents) }}，请按准确金额核对。</p>{% endif %}
+  {% if order.amount_offset_cents and state != 'ship' %}<p class="warn">金额含随机尾数 ¥ {{ fmt_cents(order.amount_offset_cents) }}，请按准确金额核对。</p>{% endif %}
   <p>{% for it in order['items'] %}{{ it.product_name }} × {{ it.qty }}{% if not loop.last %}；{% endif %}{% endfor %}</p>
   {% endif %}
-  {% if state == 'ask' %}
+  {% if state == 'ask' or state == 'ship' %}
+  {% if error is defined %}<p class="error">{{ error }}</p>{% endif %}
   <form method="post">
+    {% for it in manual_items %}
+    <div style="text-align:left;margin:10px 0">
+      <label><b>{{ it.product_name }}</b>（需发货 {{ it.pending }} 件，每行一条）</label>
+      <textarea name="manual_{{ it.product_id }}" rows="4" placeholder="一行一条发货内容">{{ manual_values.get(it.product_id|string, '') }}</textarea>
+    </div>
+    {% endfor %}
     <div class="btn-row center-row">
+      {% if state == 'ask' %}
       <button class="btn primary" type="submit" name="decision" value="confirmed">已收款，立即发货</button>
       <button class="btn danger" type="submit" name="decision" value="denied">未收到款</button>
+      {% else %}
+      <button class="btn primary" type="submit" name="decision" value="ship">发货</button>
+      {% endif %}
     </div>
   </form>
   <p class="muted">链接 24 小时内有效，只能使用一次。</p>

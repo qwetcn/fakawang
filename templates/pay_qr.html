@@ -35,9 +35,9 @@
     <a class="btn" href="/order/{{ order.out_trade_no }}">查看订单</a>
   </div>
   <p class="muted" id="refreshMsg"></p>
-  {% if channel == 'wechat' and all_auto %}
+  {% if channel == 'wechat' %}
   <div id="confirmBox">
-    <p class="muted">已付款但一直没有跳转？可能是收款监听未在线。点「我已支付」，站长会收到一封确认邮件，确认收款后立即自动发货。</p>
+    <p class="muted">已付款但一直没有跳转？可能是收款监听未在线。点「我已支付」，站长会收到一封确认邮件，确认收款后立即发货。</p>
     <button class="btn primary" id="btnConfirm">我已支付</button>
     <p class="muted" id="confirmMsg"></p>
   </div>
@@ -64,13 +64,13 @@ var CHANNEL = "{{ channel }}";
 function pollStatus(){
   fetch('/api/order/' + NO + '/status').then(function(r){ return r.json(); }).then(function(d){
     if (d.ok && d.status !== 'unpaid') { location.href = '/order/' + NO; return; }
-    {% if channel == 'wechat' and all_auto %}
+    {% if channel == 'wechat' %}
     setConfirmUI(d.confirm_status || null);
     {% endif %}
   });
 }
 var timer = setInterval(pollStatus, 5000);
-{% if channel == 'wechat' and all_auto %}
+{% if channel == 'wechat' %}
 var confirmBtn = document.getElementById('btnConfirm');
 var confirmMsg = document.getElementById('confirmMsg');
 function setConfirmUI(st){

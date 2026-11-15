@@ -761,14 +761,24 @@ class Store:
     CONFIRM_TOKEN_TTL_HOURS = 24
     CONFIRM_COOLDOWN_SECONDS = 300
 
-    def is_all_auto_order(self, order_id):
-        """订单是否全部为自动发货商品(手动确认收款只对这类订单开放)。"""
+    def pending_manual_items(self, order_id):
+        """订单里待发货的手动商品:[{product_id, product_name, qty, allocated, pending}]。
+        供确认/发货链接页渲染发货框。"""
         with self._conn() as conn:
-            n = conn.execute(
-                "SELECT COUNT(*) FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id"
-                " WHERE oi.order_id=? AND COALESCE(p.fulfill_mode, 'auto') != 'auto'",
-                (order_id,)).fetchone()[0]
-            return n == 0
+            rows = conn.execute(
+                "SELECT oi.product_id, oi.product_name, oi.qty,"
+                " (SELECT COUNT(*) FROM cards WHERE order_id=oi.order_id"
+                " AND product_id=oi.product_id) AS allocated"
+                " FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id"
+                " WHERE oi.order_id=? AND COALESCE(p.fulfill_mode, 'auto') = 'manual'"
+                " ORDER BY oi.id", (order_id,)).fetchall()
+            out = []
+            for r in rows:
+                pending = r["qty"] - r["allocated"]
+                if pending > 0:
+                    out.append({"product_id": r["product_id"], "product_name": r["product_name"],
+                                "qty": r["qty"], "allocated": r["allocated"], "pending": pending})
+            return out
 
     def create_confirm_token(self, order_id, token_hash):
         """创建确认令牌,同时作废该订单之前未决的令牌。返回新令牌 id。"""

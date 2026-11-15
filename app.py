@@ -207,7 +207,7 @@ def notify_ready(cfg):
                 and cfg["smtp_user"] and cfg["smtp_pass"])
 
 
-def _manual_order_email(order):
+def _manual_order_email(order, link=None):
     items = order.get("items") or []
     total = fmt_cents(due_cents(order))
     lines = [f"订单号:{order['out_trade_no']}", f"买家邮箱:{order['email']}",
@@ -215,15 +215,20 @@ def _manual_order_email(order):
     for it in items:
         lines.append(f"  - {it['product_name']} x {it['qty']}")
     admin_url = base_url() + "/admin"
-    lines += ["", "该订单含手动发货商品,已付款,待你发货。",
-              f"请登录后台处理:{admin_url}"]
+    lines += ["", "该订单含手动发货商品,已付款,待你发货。"]
+    if link:
+        lines += [f"直接发货(不用登录后台):{link}", "链接 24 小时内有效,只能使用一次。"]
+    lines += [f"也可以登录后台处理:{admin_url}"]
     text = "\n".join(lines)
     rows = "".join(f"<tr><td>{_esc(it['product_name'])}</td><td>{it['qty']}</td></tr>" for it in items)
+    link_html = (f"<p><a href='{_esc(link)}'>点此直接发货(不用登录后台)</a>"
+                 f"<br>链接 24 小时内有效,只能使用一次。</p>") if link else ""
     html = (f"<p>有新的手动发货订单,已付款,待你发货。</p>"
             f"<p>订单号:<b>{_esc(order['out_trade_no'])}</b><br>买家邮箱:{_esc(order['email'])}"
             f"<br>金额:¥ {total}<br>下单时间:{_esc(order['created_at'])}</p>"
             f"<table border='1' cellpadding='6' cellspacing='0'>"
             f"<tr><th>商品</th><th>数量</th></tr>{rows}</table>"
+            f"{link_html}"
             f"<p><a href='{_esc(admin_url)}'>登录后台处理</a></p>")
     return f"【手动发货】新订单 {order['out_trade_no']} ¥ {total}", text, html
 
@@ -238,15 +243,20 @@ def _confirm_email(order, link):
              f"下单时间:{order['created_at']}", "商品:"]
     for it in items:
         lines.append(f"  - {it['product_name']} x {it['qty']}")
+    if store.pending_manual_items(order["id"]):
+        lines += ["该订单含手动发货商品,点开链接确认收款后可直接填写发货内容。"]
     lines += ["", f"确认请打开:{link}", "链接 24 小时内有效,只能使用一次。"]
     text = "\n".join(lines)
     rows = "".join(f"<tr><td>{_esc(it['product_name'])}</td><td>{it['qty']}</td></tr>" for it in items)
+    manual_hint = ("<p>该订单含手动发货商品,点开链接确认收款后可直接填写发货内容。</p>"
+                   if store.pending_manual_items(order["id"]) else "")
     html = (f"<p>买家称已用微信付款,请核对微信收款记录后确认是否已收款。</p>"
             f"<p>订单号:<b>{_esc(order['out_trade_no'])}</b><br>买家邮箱:{_esc(order['email'])}"
             f"<br>应付金额:¥ <b>{total}</b>(含随机尾数,请按准确金额核对)"
             f"<br>下单时间:{_esc(order['created_at'])}</p>"
             f"<table border='1' cellpadding='6' cellspacing='0'>"
             f"<tr><th>商品</th><th>数量</th></tr>{rows}</table>"
+            f"{manual_hint}"
             f"<p><a href='{_esc(link)}'>点此确认是否已收款</a></p>"
             f"<p>链接 24 小时内有效,只能使用一次。</p>")
     return f"【待确认收款】{order['out_trade_no']} ¥ {total}", text, html
@@ -278,14 +288,23 @@ def maybe_notify_manual(order):
             fresh = store.get_order(order["id"])
             if fresh:
                 order = fresh
-        subject, text, html = _manual_order_email(order)
+        # 发货链接:点开直接填内容发货,不用登录后台。令牌建失败也不影响发邮件。
+        link = None
+        try:
+            token = secrets.token_urlsafe(32)
+            store.create_confirm_token(order["id"], hashlib.sha256(token.encode()).hexdigest())
+            link = base_url() + "/pay/confirm/" + token
+        except Exception as e:
+            app.logger.warning("fulfill link token failed: %s", e)
+        subject, text, html = _manual_order_email(order, link)
         _send_notify_in_background(cfg, order["id"], subject, text, html)
     except Exception as e:
         app.logger.warning("manual order notify failed: %s", e)
 
 
-def fulfill_and_notify(order_id, trade_no=""):
-    order = store.fulfill_order(order_id, trade_no=trade_no)
+def fulfill_and_notify(order_id, trade_no="", include_manual=False, manual_contents=None):
+    order = store.fulfill_order(order_id, trade_no=trade_no, include_manual=include_manual,
+                                manual_contents=manual_contents)
     maybe_notify_manual(order)
     return order
 
@@ -779,8 +798,7 @@ def pay_alipay_page(out_trade_no):
     in_wechat = "MicroMessenger" in request.headers.get("User-Agent", "")
     return render_template("pay_qr.html", order=order, channel="alipay",
                            qr_img=qr_img, qr_link=qr_link, error=error,
-                           in_wechat=in_wechat, payable=payable_cents(order),
-                           all_auto=False)
+                           in_wechat=in_wechat, payable=payable_cents(order))
 
 
 @app.route("/pay/wechat/<out_trade_no>")
@@ -804,14 +822,13 @@ def pay_wechat_page(out_trade_no):
         error = "店主尚未配置微信收款码,请联系站长"
     return render_template("pay_qr.html", order=order, channel="wechat",
                            qr_img=qr_img, qr_link=qr_link, error=error,
-                           in_wechat=False, payable=due_cents(order),
-                           all_auto=store.is_all_auto_order(order["id"]))
+                           in_wechat=False, payable=due_cents(order))
 
 
 # ---------- 微信免签手动确认收款 ----------
 @app.route("/api/order/<out_trade_no>/request-confirm", methods=["POST"])
 def api_request_confirm(out_trade_no):
-    """买家点「我已支付」:给站长邮箱发一条授权确认链接(仅微信免签 + 全自动发货订单)。"""
+    """买家点「我已支付」:给站长邮箱发一条授权确认链接(仅微信免签订单)。"""
     if not allow(f"confirmreq:{request.remote_addr or ''}", 20):
         return jsonify({"ok": False, "error": "操作太频繁,请稍后再试"}), 429
     order = store.get_order_by_no(out_trade_no)
@@ -821,8 +838,6 @@ def api_request_confirm(out_trade_no):
         return jsonify({"ok": False, "error": "订单已不是待支付状态"}), 400
     if order["pay_type"] != "wechat_free":
         return jsonify({"ok": False, "error": "仅微信免签订单可用商家确认"}), 400
-    if not store.is_all_auto_order(order["id"]):
-        return jsonify({"ok": False, "error": "仅自动发货商品可用商家确认"}), 400
     cfg = notify_cfg()
     if not notify_ready(cfg):
         return jsonify({"ok": False, "error": "商家未配置邮件通知,请联系客服处理"}), 503
@@ -847,9 +862,31 @@ def api_request_confirm(out_trade_no):
     return jsonify({"ok": True})
 
 
+def _parse_manual_contents(form, manual_items):
+    """解析发货框:返回 (contents, error)。contents: {product_id: [内容行]}。
+    每件手动商品至少填满待发数量,每件最多 200 条(与后台一致)。"""
+    contents = {}
+    for it in manual_items:
+        raw = form.get("manual_%s" % it["product_id"], "") or ""
+        lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+        if len(lines) < it["pending"]:
+            return None, "%s 还差 %d 条发货内容(需 %d 条,已填 %d 条)" % (
+                it["product_name"], it["pending"] - len(lines), it["pending"], len(lines))
+        if len(lines) > 200:
+            return None, "%s 最多 200 条发货内容" % it["product_name"]
+        contents[it["product_id"]] = lines
+    return contents, None
+
+
+def _manual_form_values(form, manual_items):
+    return {str(it["product_id"]): form.get("manual_%s" % it["product_id"], "") or ""
+            for it in manual_items}
+
+
 @app.route("/pay/confirm/<token>", methods=["GET", "POST"])
 def pay_confirm_page(token):
-    """站长点邮件里的授权链接,确认是否已收款。GET 只展示,POST 才裁决(防邮件预取误触)。"""
+    """站长点邮件里的授权链接:未付款的微信单确认是否已收款(手动商品可直接填内容发货);
+    已付款的手动单直接发货。GET 只展示,POST 才裁决/发货(防邮件预取误触)。"""
     if not allow(f"confirm:{request.remote_addr or ''}", 30):
         abort(429)
     token_hash = hashlib.sha256(token.encode()).hexdigest()
@@ -864,26 +901,74 @@ def pay_confirm_page(token):
     if tok["decision"] == "denied":
         return render_template("pay_confirm.html", state="done", order=order, due=due,
                                decision="denied")
+    if tok["decision"] == "shipped":
+        return render_template("pay_confirm.html", state="done", order=order, due=due,
+                               decision="shipped")
     if tok["decision"] == "superseded":
         return render_template("pay_confirm.html", state="superseded", order=order, due=due)
     if tok["expires_at"] <= now_str():
         return render_template("pay_confirm.html", state="expired", order=order, due=due)
-    if order["status"] != "unpaid":
-        return render_template("pay_confirm.html", state="paid", order=order, due=due)
-    if request.method == "POST":
-        decision = request.form.get("decision", "")
-        if decision not in ("confirmed", "denied"):
-            abort(400)
-        if not store.decide_confirm_token(tok["id"], decision):
-            return redirect(request.path)
-        if decision == "confirmed":
+    if order["status"] == "unpaid":
+        manual_items = store.pending_manual_items(order["id"])
+        if request.method == "POST":
+            decision = request.form.get("decision", "")
+            if decision not in ("confirmed", "denied"):
+                abort(400)
+            contents = {}
+            if decision == "confirmed" and manual_items:
+                contents, err = _parse_manual_contents(request.form, manual_items)
+                if err:
+                    return render_template("pay_confirm.html", state="ask", order=order, due=due,
+                                           token=token, manual_items=manual_items, error=err,
+                                           manual_values=_manual_form_values(request.form, manual_items))
+            if not store.decide_confirm_token(tok["id"], decision):
+                return redirect(request.path)
+            if decision == "confirmed":
+                fresh = store.get_order_by_no(order["out_trade_no"])
+                if fresh and fresh["status"] == "unpaid":
+                    try:
+                        fulfill_and_notify(fresh["id"], trade_no="MANUAL-CONFIRM",
+                                           include_manual=bool(manual_items),
+                                           manual_contents=contents if manual_items else None)
+                    except ValueError as e:
+                        app.logger.warning("confirm fulfill failed: %s", e)
+                        return render_template("pay_confirm.html", state="paid",
+                                               order=store.get_order(tok["order_id"]),
+                                               due=due_cents(order))
+            return render_template("pay_confirm.html", state="done",
+                                   order=store.get_order(tok["order_id"]), due=due_cents(order),
+                                   decision=decision)
+        return render_template("pay_confirm.html", state="ask", order=order, due=due, token=token,
+                               manual_items=manual_items, manual_values={})
+    if order["status"] == "paid_manual":
+        manual_items = store.pending_manual_items(order["id"])
+        if not manual_items:
+            return render_template("pay_confirm.html", state="paid", order=order, due=due)
+        if request.method == "POST":
+            if request.form.get("decision", "") != "ship":
+                abort(400)
+            contents, err = _parse_manual_contents(request.form, manual_items)
+            if err:
+                return render_template("pay_confirm.html", state="ship", order=order, due=due,
+                                       token=token, manual_items=manual_items, error=err,
+                                       manual_values=_manual_form_values(request.form, manual_items))
+            if not store.decide_confirm_token(tok["id"], "shipped"):
+                return redirect(request.path)
             fresh = store.get_order_by_no(order["out_trade_no"])
-            if fresh and fresh["status"] == "unpaid":
-                fulfill_and_notify(fresh["id"], trade_no="MANUAL-CONFIRM")
-        return render_template("pay_confirm.html", state="done",
-                               order=store.get_order(tok["order_id"]), due=due_cents(order),
-                               decision=decision)
-    return render_template("pay_confirm.html", state="ask", order=order, due=due, token=token)
+            if fresh and fresh["status"] == "paid_manual":
+                try:
+                    store.fulfill_order(fresh["id"], include_manual=True, manual_contents=contents)
+                except ValueError as e:
+                    app.logger.warning("ship link fulfill failed: %s", e)
+                    return render_template("pay_confirm.html", state="paid",
+                                           order=store.get_order(tok["order_id"]),
+                                           due=due_cents(order))
+            return render_template("pay_confirm.html", state="done",
+                                   order=store.get_order(tok["order_id"]), due=due_cents(order),
+                                   decision="shipped")
+        return render_template("pay_confirm.html", state="ship", order=order, due=due, token=token,
+                               manual_items=manual_items, manual_values={})
+    return render_template("pay_confirm.html", state="paid", order=order, due=due)
 
 
 # ---------- 支付回调 ----------
