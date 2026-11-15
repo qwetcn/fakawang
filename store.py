@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS products (
     max_qty INTEGER NOT NULL DEFAULT 100,
     fulfill_mode TEXT NOT NULL DEFAULT 'auto',
     manual_stock INTEGER NOT NULL DEFAULT 1,
+    infinite_content TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS cards (
@@ -135,6 +136,8 @@ class Store:
                 conn.execute("ALTER TABLE products ADD COLUMN fulfill_mode TEXT NOT NULL DEFAULT 'auto'")
             if "manual_stock" not in cols:
                 conn.execute("ALTER TABLE products ADD COLUMN manual_stock INTEGER NOT NULL DEFAULT 1")
+            if "infinite_content" not in cols:
+                conn.execute("ALTER TABLE products ADD COLUMN infinite_content TEXT NOT NULL DEFAULT ''")
             ocols = [r[1] for r in conn.execute("PRAGMA table_info(orders)").fetchall()]
             if "notified_at" not in ocols:
                 conn.execute("ALTER TABLE orders ADD COLUMN notified_at TEXT")
@@ -213,24 +216,26 @@ class Store:
 
     def add_product(self, category_id, name, price_cents, image_url="", description="",
                     sort=0, recommend=0, enabled=1, min_qty=1, max_qty=100, fulfill_mode="auto",
-                    manual_stock=1):
-        if fulfill_mode not in ("auto", "manual"):
-            raise ValueError("发货方式只能是 auto 或 manual")
+                    manual_stock=1, infinite_content=""):
+        if fulfill_mode not in ("auto", "manual", "infinite"):
+            raise ValueError("发货方式只能是 auto、manual 或 infinite")
         with WRITE_LOCK, self._conn() as conn:
             cur = conn.execute(
                 "INSERT INTO products(category_id, name, price_cents, image_url, description,"
-                " sort, recommend, enabled, min_qty, max_qty, fulfill_mode, manual_stock, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " sort, recommend, enabled, min_qty, max_qty, fulfill_mode, manual_stock,"
+                " infinite_content, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (category_id, name, price_cents, image_url, description,
-                 sort, recommend, enabled, min_qty, max_qty, fulfill_mode, manual_stock, now_str()))
+                 sort, recommend, enabled, min_qty, max_qty, fulfill_mode, manual_stock,
+                 infinite_content, now_str()))
             return cur.lastrowid
 
     def update_product(self, pid, **fields):
-        if "fulfill_mode" in fields and fields["fulfill_mode"] not in ("auto", "manual"):
-            raise ValueError("发货方式只能是 auto 或 manual")
+        if "fulfill_mode" in fields and fields["fulfill_mode"] not in ("auto", "manual", "infinite"):
+            raise ValueError("发货方式只能是 auto、manual 或 infinite")
         allowed = {"category_id", "name", "price_cents", "image_url", "description",
                    "sort", "recommend", "enabled", "min_qty", "max_qty", "fulfill_mode",
-                   "manual_stock"}
+                   "manual_stock", "infinite_content"}
         sets, vals = [], []
         for k, v in fields.items():
             if k in allowed:
@@ -428,6 +433,8 @@ class Store:
                     if p["fulfill_mode"] == "manual":
                         if not p["manual_stock"]:
                             raise ValueError(f"{p['name']} 暂时无货")
+                    elif p["fulfill_mode"] == "infinite":
+                        pass  # 无限发货:同一份内容反复发,不查库存
                     else:
                         stock = conn.execute(
                             "SELECT COUNT(*) FROM cards WHERE product_id=? AND status='unused'",
@@ -564,7 +571,8 @@ class Store:
                     conn.rollback()
                     return dict(order)
                 items = conn.execute(
-                    "SELECT oi.*, COALESCE(p.fulfill_mode, 'auto') AS fulfill_mode"
+                    "SELECT oi.*, COALESCE(p.fulfill_mode, 'auto') AS fulfill_mode,"
+                    " COALESCE(p.infinite_content, '') AS infinite_content"
                     " FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id"
                     " WHERE oi.order_id=? ORDER BY oi.id", (order_id,)).fetchall()
                 short = []
@@ -579,6 +587,18 @@ class Store:
                             manual_pending = True
                         continue
                     if need <= 0:
+                        continue
+                    if it["fulfill_mode"] == "infinite":
+                        # 无限发货:每个买家都发商品上预设的同一份内容,不消耗库存。
+                        content = (it["infinite_content"] or "").strip()
+                        if not content:
+                            short.append(f"{it['product_name']} 未设置发货内容")
+                        else:
+                            for _ in range(need):
+                                conn.execute(
+                                    "INSERT INTO cards(product_id, content, source, status, order_id,"
+                                    " created_at, used_at) VALUES (?, ?, 'infinite', 'used', ?, ?, ?)",
+                                    (it["product_id"], content, order_id, now_str(), now_str()))
                         continue
                     if it["fulfill_mode"] == "manual" and include_manual:
                         lines = (manual_contents or {}).get(it["product_id"]) or []
@@ -654,8 +674,9 @@ class Store:
                     if modes and all(m[0] != "manual" for m in modes):
                         raise ValueError("自动发货的订单不能退单,缺货时请补库存后点手动发货")
                 # 手动现填的内容是专属的,取消后直接删除,绝不能回流库存被二次出售;
+                # 无限发货的内容是商品预设内容的副本,同样直接删除;
                 # 只有预导入的库存卡才释放回未售出。
-                conn.execute("DELETE FROM cards WHERE order_id=? AND source='manual'", (order_id,))
+                conn.execute("DELETE FROM cards WHERE order_id=? AND source IN ('manual', 'infinite')", (order_id,))
                 conn.execute(
                     "UPDATE cards SET status='unused', order_id=NULL, used_at=NULL"
                     " WHERE order_id=? AND source='stock'",

@@ -1432,7 +1432,7 @@ def _product_fields(data, partial=False):
         fields["name"] = str(data.get("name", "")).strip()
     if "price" in data or not partial:
         fields["price_cents"] = money_to_cents(data.get("price", "0"))
-    for k in ("image_url", "description"):
+    for k in ("image_url", "description", "infinite_content"):
         if k in data or not partial:
             fields[k] = str(data.get(k, ""))
     defaults = {"sort": 0, "recommend": 0, "enabled": 1, "min_qty": 1, "max_qty": 100,
@@ -1444,9 +1444,12 @@ def _product_fields(data, partial=False):
         fields["manual_stock"] = 1 if fields["manual_stock"] else 0
     if "fulfill_mode" in data or not partial:
         mode = str(data.get("fulfill_mode", "auto")).strip()
-        if mode not in ("auto", "manual"):
-            raise ValueError("发货方式只能是 auto 或 manual")
+        if mode not in ("auto", "manual", "infinite"):
+            raise ValueError("发货方式只能是 auto、manual 或 infinite")
         fields["fulfill_mode"] = mode
+    if not partial and fields.get("fulfill_mode") == "infinite" \
+            and not str(fields.get("infinite_content", "")).strip():
+        raise ValueError("无限发货模式请先填写发货内容")
     if "name" in fields and not fields["name"]:
         raise ValueError("商品名不能为空")
     if "category_id" in fields and fields["category_id"] <= 0:
@@ -1559,6 +1562,13 @@ def admin_product(pid):
         fields = _product_fields(data, partial=True)
     except (ValueError, TypeError) as e:
         return jsonify({"ok": False, "error": str(e)}), 400
+    if "fulfill_mode" in fields or "infinite_content" in fields:
+        cur = store.get_product(pid)
+        if cur:
+            eff_mode = fields.get("fulfill_mode", cur["fulfill_mode"])
+            eff_content = fields.get("infinite_content", cur.get("infinite_content", ""))
+            if eff_mode == "infinite" and not str(eff_content).strip():
+                return jsonify({"ok": False, "error": "无限发货模式请先填写发货内容"}), 400
     old = store.get_product(pid) if "image_url" in fields else None
     store.update_product(pid, **fields)
     if old and old.get("image_url") != fields["image_url"]:

@@ -68,9 +68,12 @@ function render(){
     var sub = p.price_cents * it.qty;
     total += sub;
     var manual = p.fulfill_mode === 'manual';
-    var lack = manual ? !p.manual_stock : it.qty > p.stock;
+    var infinite = p.fulfill_mode === 'infinite';
+    var lack = infinite ? false : (manual ? !p.manual_stock : it.qty > p.stock);
     if (lack) valid = false;
-    var stockHtml = manual
+    var stockHtml = infinite
+      ? ' <span class="stock">有货</span>'
+      : manual
       ? (p.manual_stock ? ' <span class="stock">有货</span>' : ' <span class="stock out">缺货</span>')
       : (lack ? ' <span class="stock out">库存不足,仅剩 ' + p.stock + '</span>' : ' <span class="stock">库存 ' + p.stock + '</span>');
     html += '<div class="cart-item"><div><b>' + esc(p.name) + '</b><br><span class="muted">¥ ' + (p.price_cents/100).toFixed(2) + ' × </span>'
