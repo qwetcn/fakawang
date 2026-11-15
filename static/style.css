@@ -58,6 +58,7 @@ textarea { resize: vertical; line-height: 1.6; }
 .btn.danger { color: #b91c1c; border-color: #fecaca; }
 .btn-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
 .desc { font-size: 14px; line-height: 1.9; white-space: normal; word-break: break-all; }
+.desc img { max-width: 100%; height: auto; }
 .tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
 .tbl th, .tbl td { text-align: left; padding: 9px 8px; border-bottom: 1px solid #f0f0f5; vertical-align: middle; }
 .tbl input { padding: 7px 9px; font-size: 14px; }

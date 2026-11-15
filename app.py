@@ -27,6 +27,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 import alipay
 import epay
 import mailer
+import richtext
 import wfree
 from store import Store, now_str, seed_demo
 
@@ -540,6 +541,12 @@ def nl2br(value):
     """转义文本并把换行转成 <br>。"""
     from markupsafe import Markup, escape
     return Markup("<br>").join(escape(part) for part in str(value or "").split("\n"))
+
+
+@app.template_filter("richdesc")
+def richdesc(value):
+    """商品详情:纯文本按 nl2br,含 HTML 则清洗后渲染(见 richtext.py)。"""
+    return richtext.render_description(value or "")
 
 
 @app.context_processor
