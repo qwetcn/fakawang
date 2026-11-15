@@ -64,8 +64,9 @@
 <label><input type="checkbox" id="prodManualStock" checked> 有货(手动发货)</label>
 <label>发货方式 <select id="prodMode"><option value="auto">自动发货</option><option value="manual">手动发货</option></select></label>
 </div>
-<label>商品详情(纯文本,换行显示)</label>
-<textarea id="prodDesc" rows="5" placeholder="卡密格式、售后说明等,支持换行;也可粘贴 HTML 代码做彩色标题、描边框等美化(危险标签自动过滤)"></textarea>
+<label>商品详情 <button type="button" class="btn" id="btnInsertImg">插入图片</button> <span class="muted" id="insertImgHint"></span></label>
+<input type="file" id="descImgFile" accept="image/png,image/jpeg,image/gif,image/webp" hidden>
+<textarea id="prodDesc" rows="5" placeholder="卡密格式、售后说明等,支持换行;也可粘贴 HTML 代码做彩色标题、描边框等美化(危险标签自动过滤);点「插入图片」选图即可把图片加进详情"></textarea>
 <div class="btn-row">
 <button class="btn primary" id="btnSaveProd">保存商品</button>
 <button class="btn" id="btnResetProd">清空表单</button>
@@ -297,6 +298,37 @@ if (res.d.ok) { document.getElementById('prodImg').value = res.d.url; refreshPro
 else alert(res.d.error || '上传失败');
 })
 .catch(function(){ alert('上传失败,请检查网络后重试'); });
+};
+document.getElementById('btnInsertImg').onclick = function(){ document.getElementById('descImgFile').click(); };
+document.getElementById('descImgFile').onchange = function(){
+var file = this.files[0];
+this.value = '';
+if (!file) return;
+var hint = document.getElementById('insertImgHint');
+hint.textContent = '上传中…';
+var fd = new FormData();
+fd.append('file', file);
+fetch('/admin/api/upload-image', {method: 'POST', headers: {'X-CSRF-Token': CSRF}, body: fd})
+.then(function(r){ return r.json().then(function(d){ return {status: r.status, d: d}; }); })
+.then(function(res){
+if (res.d.ok) {
+var ta = document.getElementById('prodDesc');
+var tag = '<p style="margin:10px 0"><img src="' + res.d.url + '" style="max-width:100%"></p>';
+if (!/<\/?[a-zA-Z][^>]*>/.test(ta.value)) {
+// 纯文本详情直接进 HTML 模式会丢换行:先转义并把换行变 <br>,图片加到末尾
+var esc = ta.value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+ta.value = esc.split('\n').join('<br>\n') + (esc.trim() ? '\n' : '') + tag;
+} else {
+var start = (typeof ta.selectionStart === 'number') ? ta.selectionStart : ta.value.length;
+ta.value = ta.value.slice(0, start) + tag + ta.value.slice(start);
+}
+ta.focus();
+hint.textContent = '已插入图片,记得保存商品';
+setTimeout(function(){ hint.textContent = ''; }, 4000);
+}
+else { hint.textContent = ''; alert(res.d.error || '上传失败'); }
+})
+.catch(function(){ hint.textContent = ''; alert('上传失败,请检查网络后重试'); });
 };
 function resetProdForm(){
 document.getElementById('prodId').value = '';
