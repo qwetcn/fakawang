@@ -22,6 +22,7 @@
         <span class="stock out">缺货</span> <span class="mode">自动发货</span>
         {% endif %}
       {% if product.fulfill_mode == 'manual' %}<p class="muted">手动发货:付款后由商家人工发货,请在订单页查看进度,或通过客服联系商家。</p>{% endif %}
+      {% if product.fulfill_mode == 'infinite' %}<p class="muted">本商品内容共享,购买多份也只发一份。</p>{% endif %}
       </p>
       <p class="price-big">¥ {{ fmt_cents(product.price_cents) }}</p>
     </div>

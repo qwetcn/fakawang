@@ -589,12 +589,12 @@ class Store:
                     if need <= 0:
                         continue
                     if it["fulfill_mode"] == "infinite":
-                        # 无限发货:每个买家都发商品上预设的同一份内容,不消耗库存。
-                        content = (it["infinite_content"] or "").strip()
-                        if not content:
-                            short.append(f"{it['product_name']} 未设置发货内容")
-                        else:
-                            for _ in range(need):
+                        # 无限发货:同一份内容每个订单只发一份,不按购买数量复制。
+                        if allocated == 0:
+                            content = (it["infinite_content"] or "").strip()
+                            if not content:
+                                short.append(f"{it['product_name']} 未设置发货内容")
+                            else:
                                 conn.execute(
                                     "INSERT INTO cards(product_id, content, source, status, order_id,"
                                     " created_at, used_at) VALUES (?, ?, 'infinite', 'used', ?, ?, ?)",
