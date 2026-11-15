@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block body %}
-<div class="cats">
+<div class="cats" id="all">
   <a href="#all" class="chip">全部</a>
   {% for c in categories %}
   <a href="#cat-{{ c.id }}" class="chip">{{ c.name }}</a>
